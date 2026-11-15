@@ -1,4 +1,6 @@
+import * as d3 from 'd3';
 import { sampleWindAtCoord, WindVectorField } from '../analysis/windVectorField';
+import { BeaThemePalette, resolveTheme } from '../theme/themes';
 
 export interface WindParticle {
   lon: number;
@@ -78,23 +80,23 @@ function projectGlobePoint(
   };
 }
 
+function hexWithAlpha(hex: string, alpha: number): string {
+  const col = d3.rgb(hex);
+  const a = Math.max(0.05, Math.min(0.95, alpha)).toFixed(3);
+  return `rgba(${Math.round(col.r)}, ${Math.round(col.g)}, ${Math.round(col.b)}, ${a})`;
+}
+
 function getWindStrokeStyle(
   speedMs: number,
   alpha: number,
-  nightMode: boolean
+  pal: BeaThemePalette
 ): { stroke: string; lineWidth: number } {
-  const a = Math.max(0.05, Math.min(0.95, alpha)).toFixed(3);
-  if (nightMode) {
-    if (speedMs >= 22) return { stroke: `rgba(255, 59, 48, ${a})`, lineWidth: 1.55 };
-    if (speedMs >= 14) return { stroke: `rgba(220, 38, 38, ${a})`, lineWidth: 1.35 };
-    if (speedMs >= 6) return { stroke: `rgba(185, 28, 28, ${a})`, lineWidth: 1.1 };
-    return { stroke: `rgba(127, 29, 29, ${a})`, lineWidth: 0.9 };
-  }
-
-  if (speedMs >= 22) return { stroke: `rgba(245, 158, 11, ${a})`, lineWidth: 1.85 };
-  if (speedMs >= 14) return { stroke: `rgba(56, 189, 248, ${a})`, lineWidth: 1.5 };
-  if (speedMs >= 6) return { stroke: `rgba(94, 234, 212, ${a})`, lineWidth: 1.25 };
-  return { stroke: `rgba(148, 163, 184, ${a})`, lineWidth: 0.95 };
+  const stops = pal.canvas.windStops;
+  const isNight = pal.isNightFilter;
+  if (speedMs >= 22) return { stroke: hexWithAlpha(stops[3], alpha), lineWidth: isNight ? 1.55 : 1.85 };
+  if (speedMs >= 14) return { stroke: hexWithAlpha(stops[2], alpha), lineWidth: isNight ? 1.35 : 1.5 };
+  if (speedMs >= 6) return { stroke: hexWithAlpha(stops[1], alpha), lineWidth: isNight ? 1.1 : 1.25 };
+  return { stroke: hexWithAlpha(stops[0], alpha), lineWidth: isNight ? 0.9 : 0.95 };
 }
 
 export interface StepWindOverlayParams {
@@ -108,6 +110,7 @@ export interface StepWindOverlayParams {
   globeCenter: { lat: number; lon: number };
   fittedRect: WindFittedRect;
   nightMode: boolean;
+  theme?: BeaThemePalette;
 }
 
 /**
@@ -126,13 +129,16 @@ export function stepAndDrawWindOverlay({
   globeCenter,
   fittedRect,
   nightMode,
+  theme,
 }: StepWindOverlayParams): void {
   if (width <= 0 || height <= 0) return;
+  const pal = resolveTheme(theme, nightMode);
+  const isNight = pal.isNightFilter;
 
   // Fade previous frame's trails smoothly without touching underlying satellite pixels
   ctx.save();
   ctx.globalCompositeOperation = 'destination-out';
-  ctx.fillStyle = nightMode ? 'rgba(0, 0, 0, 0.16)' : 'rgba(0, 0, 0, 0.13)';
+  ctx.fillStyle = isNight ? 'rgba(0, 0, 0, 0.16)' : 'rgba(0, 0, 0, 0.13)';
   ctx.fillRect(0, 0, width, height);
   ctx.restore();
 
@@ -151,7 +157,7 @@ export function stepAndDrawWindOverlay({
   }
   ctx.clip();
 
-  ctx.globalCompositeOperation = nightMode ? 'source-over' : 'lighter';
+  ctx.globalCompositeOperation = isNight ? 'source-over' : 'lighter';
   ctx.lineCap = 'square';
 
   const dtNorm = Math.min(0.05, Math.max(0.008, dtSec));
@@ -195,8 +201,8 @@ export function stepAndDrawWindOverlay({
       const dx = x1 - x0;
       const dy = y1 - y0;
       if (Math.hypot(dx, dy) > 0.04) {
-        const baseAlpha = lifeFade * speedAlpha * oceanWeight * (nightMode ? 0.64 : 0.84);
-        const style = getWindStrokeStyle(sample.speedMs, baseAlpha, nightMode);
+        const baseAlpha = lifeFade * speedAlpha * oceanWeight * (isNight ? 0.64 : 0.84);
+        const style = getWindStrokeStyle(sample.speedMs, baseAlpha, pal);
         ctx.strokeStyle = style.stroke;
         ctx.lineWidth = style.lineWidth;
         ctx.beginPath();
@@ -218,8 +224,8 @@ export function stepAndDrawWindOverlay({
         if (segLen > 0.04 && segLen < R * 0.25) {
           const limbFade = Math.min(1, pt1.cosC * 2.2);
           const baseAlpha =
-            lifeFade * limbFade * speedAlpha * oceanWeight * (nightMode ? 0.65 : 0.88);
-          const style = getWindStrokeStyle(sample.speedMs, baseAlpha, nightMode);
+            lifeFade * limbFade * speedAlpha * oceanWeight * (isNight ? 0.65 : 0.88);
+          const style = getWindStrokeStyle(sample.speedMs, baseAlpha, pal);
           ctx.strokeStyle = style.stroke;
           ctx.lineWidth = style.lineWidth;
           ctx.beginPath();

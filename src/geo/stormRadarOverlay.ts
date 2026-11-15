@@ -1,5 +1,6 @@
 import * as d3 from 'd3';
 import { sampleWindAtCoord, WindVectorField } from '../analysis/windVectorField';
+import { BeaThemePalette, resolveTheme } from '../theme/themes';
 import { WindFittedRect } from './windFlowOverlay';
 
 export const STORM_GRID_COLS = 72; // 5° longitude grid for fluid 60fps D3 contours
@@ -390,6 +391,7 @@ export interface RenderStormRadarParams {
   globeCenter: { lat: number; lon: number };
   fittedRect: WindFittedRect;
   nightMode: boolean;
+  theme?: BeaThemePalette;
 }
 
 /**
@@ -408,11 +410,14 @@ export function renderStormRadarOverlay({
   globeCenter,
   fittedRect,
   nightMode,
+  theme,
 }: RenderStormRadarParams): { activeCores: number; deepestHpa: number } {
   ctx.clearRect(0, 0, width, height);
   if (width <= 0 || height <= 0 || intensity <= 0.01) {
     return { activeCores: 0, deepestHpa: AMBIENT_SLP_HPA };
   }
+  const pal = resolveTheme(theme, nightMode);
+  const cTheme = pal.canvas;
 
   const resolvedCores = model.cores.map((core) => ({
     ...getCorePositionAtTime(core, timeSec, intensity),
@@ -479,7 +484,11 @@ export function renderStormRadarOverlay({
   }
   ctx.clip();
 
-  const colorScale = nightMode ? nightPressureStrokeScale : pressureStrokeScale;
+  const colorScale = d3
+    .scaleLinear<string>()
+    .domain(STORM_RADAR_LEGEND_STOPS.map((s) => s.deficitHpa))
+    .range(cTheme.stormStops)
+    .clamp(true);
   const alphaBoost = clamp(0.45 + intensity * 0.35, 0.35, 1.0);
 
   for (let idx = 0; idx < rawContours.length; idx++) {
@@ -565,15 +574,11 @@ export function renderStormRadarOverlay({
 
     const isSevere = coreHpa <= 974;
     const isModerate = coreHpa <= 986;
-    const coreColor = nightMode
-      ? isSevere
-        ? '#FF7875'
-        : '#FF453A'
-      : isSevere
-      ? '#FB7185'
+    const coreColor = isSevere
+      ? cTheme.secondary
       : isModerate
-      ? '#F59E0B'
-      : '#5EEAD4';
+      ? cTheme.tertiary
+      : cTheme.primary;
 
     const eyeAlpha = clamp(screenPt.cosC * 1.4, 0.35, 0.98);
     ctx.save();
@@ -603,7 +608,7 @@ export function renderStormRadarOverlay({
     ctx.restore();
 
     // Central 'L' box + live barometric readout
-    ctx.fillStyle = nightMode ? 'rgba(7, 1, 2, 0.88)' : 'rgba(6, 11, 20, 0.88)';
+    ctx.fillStyle = cTheme.bgTooltip;
     ctx.fillRect(-5, -5, 10, 10);
     ctx.strokeStyle = coreColor;
     ctx.lineWidth = 1;
@@ -616,9 +621,9 @@ export function renderStormRadarOverlay({
     ctx.textAlign = 'left';
     const tag = `${core.label} ${coreHpa}`;
     const tagW = ctx.measureText(tag).width + 6;
-    ctx.fillStyle = nightMode ? 'rgba(7, 1, 2, 0.84)' : 'rgba(6, 11, 20, 0.84)';
+    ctx.fillStyle = cTheme.bgTooltip;
     ctx.fillRect(10, -7, tagW, 14);
-    ctx.strokeStyle = nightMode ? 'rgba(255, 69, 58, 0.45)' : 'rgba(94, 234, 212, 0.35)';
+    ctx.strokeStyle = `rgba(${cTheme.primaryRgb}, 0.42)`;
     ctx.strokeRect(10, -7, tagW, 14);
     ctx.fillStyle = coreColor;
     ctx.fillText(tag, 13, 0.5);

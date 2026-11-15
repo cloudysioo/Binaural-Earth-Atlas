@@ -5,9 +5,11 @@ import {
   HelpCircle,
   Minus,
   Moon,
+  Palette,
   Pause,
   Play,
   Radio,
+  ScatterChart,
   Sparkles,
   Speech,
   Volume2,
@@ -47,8 +49,20 @@ import {
   SolarFlareSignal,
 } from './components/RadarCompassHud';
 import { ProjectionMode, SatelliteMapCanvas } from './components/SatelliteMapCanvas';
+import {
+  computePearsonCorrelation,
+  CorrelationSamplePoint,
+  SignalCorrelationPlot,
+} from './components/SignalCorrelationPlot';
 import { TactileSwitchToggle } from './components/TactileSwitchToggle';
 import { TemporalTrendsChart } from './components/TemporalTrendsChart';
+import {
+  applyThemeCssVars,
+  BEA_THEMES,
+  isThemeId,
+  THEME_ORDER,
+  ThemeId,
+} from './theme/themes';
 import {
   ARCHIVE_YEARS,
   ArchiveYear,
@@ -84,6 +98,7 @@ function getUtcClockString(ms = Date.now()): string {
 
 const ONBOARDING_STORAGE_KEY = 'bea_onboarding_completed_v1';
 const NIGHT_MODE_STORAGE_KEY = 'bea_observatory_night_mode_v1';
+const THEME_STORAGE_KEY = 'bea_color_theme_v1';
 
 function hasCompletedOnboarding(): boolean {
   try {
@@ -93,11 +108,15 @@ function hasCompletedOnboarding(): boolean {
   }
 }
 
-function getInitialNightMode(): boolean {
+function getInitialThemeId(): ThemeId {
   try {
-    return window.localStorage.getItem(NIGHT_MODE_STORAGE_KEY) === '1';
+    const saved = window.localStorage.getItem(THEME_STORAGE_KEY);
+    if (isThemeId(saved)) {
+      return saved;
+    }
+    return window.localStorage.getItem(NIGHT_MODE_STORAGE_KEY) === '1' ? 'night' : 'obsidian';
   } catch {
-    return false;
+    return 'obsidian';
   }
 }
 
@@ -155,8 +174,12 @@ export default function App() {
   const [showWindFlow, setShowWindFlow] = useState<boolean>(true);
   const [showStormRadar, setShowStormRadar] = useState<boolean>(true);
   const [stormRadarIntensity, setStormRadarIntensity] = useState<number>(1.0);
-  const [observatoryNightMode, setObservatoryNightMode] = useState<boolean>(() =>
-    getInitialNightMode()
+  const [showSignalCorrelation, setShowSignalCorrelation] = useState<boolean>(true);
+  const [themeId, setThemeId] = useState<ThemeId>(() => getInitialThemeId());
+  const activeTheme = BEA_THEMES[themeId];
+  const observatoryNightMode = activeTheme.isNightFilter;
+  const lastStandardThemeRef = useRef<Exclude<ThemeId, 'night'>>(
+    themeId === 'night' ? 'obsidian' : themeId
   );
   const [isOnboardingOpen, setIsOnboardingOpen] = useState<boolean>(() => !hasCompletedOnboarding());
   const [activeTab, setActiveTab] = useState<ReferenceTab>('log');
@@ -197,6 +220,7 @@ export default function App() {
   });
 
   const [history, setHistory] = useState<TelemetryPoint[]>([]);
+  const [correlationHistory, setCorrelationHistory] = useState<CorrelationSamplePoint[]>([]);
   const [audioEvents, setAudioEvents] = useState<AudioEventEntry[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([
     {
@@ -340,13 +364,14 @@ export default function App() {
   }, [activeLayerKey]);
 
   useEffect(() => {
-    document.documentElement.classList.toggle('observatory-night', observatoryNightMode);
+    applyThemeCssVars(activeTheme);
     try {
-      window.localStorage.setItem(NIGHT_MODE_STORAGE_KEY, observatoryNightMode ? '1' : '0');
+      window.localStorage.setItem(THEME_STORAGE_KEY, activeTheme.id);
+      window.localStorage.setItem(NIGHT_MODE_STORAGE_KEY, activeTheme.isNightFilter ? '1' : '0');
     } catch {
       // Ignore storage restrictions
     }
-  }, [observatoryNightMode]);
+  }, [activeTheme]);
 
   const computeLayerDopplers = useCallback(
     (
@@ -541,6 +566,21 @@ export default function App() {
               anomaly,
             },
           ].sort((a, b) => a.monthIndex - b.monthIndex);
+        });
+
+        setCorrelationHistory((prev) => {
+          const prior = prev
+            .filter((item) => item.dateStr !== dateStr)
+            .map((item) => ({ ...item, isCurrentFrame: false }));
+          const currentFramePts: CorrelationSamplePoint[] = LAYER_ORDER.map((k) => ({
+            id: `${dateStr}-${k}`,
+            dateStr,
+            layerKey: k,
+            brightness: nextVectors[k].brightness,
+            climateAnomaly: nextVectors[k].climateAnomaly,
+            isCurrentFrame: true,
+          }));
+          return [...prior, ...currentFramePts].slice(-48);
         });
 
         if (targetMonth === 9) {
@@ -789,6 +829,7 @@ export default function App() {
       lastDopplerFrameDateRef.current = null;
       audioEngineRef.current?.resetArchiveEventHistory();
       setHistory([]);
+      setCorrelationHistory([]);
       archiveYearRef.current = targetYear;
       setArchiveYear(targetYear);
 
@@ -909,6 +950,20 @@ export default function App() {
     }
   }, []);
 
+  const handleToggleSignalCorrelation = useCallback(() => {
+    setShowSignalCorrelation((prev) => {
+      const next = !prev;
+      appendLog(
+        `SIGNAL CORRELATION D3 SCATTER ${next ? 'ENABLED' : 'COLLAPSED'} (BRIGHTNESS × ANOMALY)`,
+        next ? 'mint' : 'info'
+      );
+      announcerRef.current?.announceImmediate(
+        `Signal correlation scatter plot ${next ? 'enabled' : 'hidden'}.`
+      );
+      return next;
+    });
+  }, [appendLog]);
+
   const handleCloseOnboarding = useCallback(
     (startAudioAfter = false) => {
       try {
@@ -954,21 +1009,48 @@ export default function App() {
     });
   }, [appendLog]);
 
-  const handleToggleNightMode = useCallback(() => {
-    setObservatoryNightMode((prev) => {
-      const next = !prev;
+  const handleSelectTheme = useCallback(
+    (nextId: ThemeId) => {
+      if (nextId !== 'night') {
+        lastStandardThemeRef.current = nextId;
+      }
+      setThemeId(nextId);
+      const meta = BEA_THEMES[nextId];
       appendLog(
-        next
-          ? 'OBSERVATORY NIGHT MODE ENABLED · DEEP RED DARK-ADAPTATION PALETTE & REDUCED CANVAS BLOOM'
-          : 'OBSERVATORY NIGHT MODE DISABLED · STANDARD OBSIDIAN SPECTRUM RESTORED',
-        next ? 'coral' : 'info'
+        `COLOR THEME -> ${meta.label.toUpperCase()} (${meta.description.toUpperCase()})`,
+        meta.isNightFilter ? 'coral' : 'mint'
       );
       announcerRef.current?.announceImmediate(
-        next
-          ? 'Observatory night mode enabled. Deep red dark adaptation palette active and canvas bloom reduced.'
-          : 'Observatory night mode disabled. Standard spectrum restored.'
+        `Color theme set to ${meta.label}. ${meta.description}.`
       );
-      return next;
+    },
+    [appendLog]
+  );
+
+  const handleToggleNightMode = useCallback(() => {
+    setThemeId((prevId) => {
+      const enteringNight = prevId !== 'night';
+      if (!enteringNight) {
+        const restoreId = lastStandardThemeRef.current;
+        const restoreMeta = BEA_THEMES[restoreId];
+        appendLog(
+          `OBSERVATORY NIGHT MODE DISABLED · ${restoreMeta.label.toUpperCase()} SPECTRUM RESTORED`,
+          'info'
+        );
+        announcerRef.current?.announceImmediate(
+          `Observatory night mode disabled. ${restoreMeta.label} spectrum restored.`
+        );
+        return restoreId;
+      }
+      lastStandardThemeRef.current = prevId;
+      appendLog(
+        'OBSERVATORY NIGHT MODE ENABLED · DEEP RED DARK-ADAPTATION PALETTE & REDUCED CANVAS BLOOM',
+        'coral'
+      );
+      announcerRef.current?.announceImmediate(
+        'Observatory night mode enabled. Deep red dark adaptation palette active and canvas bloom reduced.'
+      );
+      return 'night';
     });
   }, [appendLog]);
 
@@ -1190,6 +1272,23 @@ export default function App() {
     [windField, listenerAngle]
   );
   const activeDateStr = formatArchiveDate(archiveYear, monthIndex);
+  const correlationPoints = useMemo<CorrelationSamplePoint[]>(() => {
+    if (correlationHistory.length > 0) return correlationHistory;
+    return LAYER_ORDER.map((k) => ({
+      id: `${activeDateStr}-${k}`,
+      dateStr: activeDateStr,
+      layerKey: k,
+      brightness: vectors[k].brightness,
+      climateAnomaly: vectors[k].climateAnomaly,
+      isCurrentFrame: true,
+    }));
+  }, [correlationHistory, activeDateStr, vectors]);
+
+  const correlationStats = useMemo(
+    () => computePearsonCorrelation(correlationPoints),
+    [correlationPoints]
+  );
+
   const solarTelemetry = useMemo(
     () =>
       computeSolarActivityTelemetry(
@@ -1420,14 +1519,13 @@ export default function App() {
       >
         <div className="max-w-[1680px] mx-auto w-full px-4 lg:px-5 py-2.5 flex flex-wrap xl:flex-nowrap items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0 shrink-0">
-            <BrandLogo size={32} nightMode={observatoryNightMode} />
+            <BrandLogo size={32} nightMode={observatoryNightMode} theme={activeTheme} />
             <h1 className="text-base sm:text-lg font-bold tracking-tight whitespace-nowrap">
               <span
-                className={`bg-gradient-to-r bg-clip-text text-transparent ${
-                  observatoryNightMode
-                    ? 'from-[#B91C1C] via-[#DC2626] to-[#FF453A]'
-                    : 'from-[#38BDF8] via-[#2DD4BF] to-[#5EEAD4]'
-                }`}
+                className="bg-clip-text text-transparent"
+                style={{
+                  backgroundImage: `linear-gradient(to right, ${activeTheme.titleGradient[0]}, ${activeTheme.titleGradient[1]}, ${activeTheme.titleGradient[2]})`,
+                }}
               >
                 Binaural Earth
               </span>{' '}
@@ -1456,8 +1554,8 @@ export default function App() {
                 {solarTelemetry.kpIndex.toFixed(1)}
               </strong>
             </span>
-            <span className="hidden xl:inline text-[var(--border-strong)]" aria-hidden="true">|</span>
-            <span className="hidden xl:inline text-[var(--text-muted)]">{utcClock}</span>
+            <span className="hidden 2xl:inline text-[var(--border-strong)]" aria-hidden="true">|</span>
+            <span className="hidden 2xl:inline text-[var(--text-muted)]">{utcClock}</span>
           </div>
 
           <div className="flex items-center gap-2 shrink-0 flex-wrap sm:flex-nowrap">
@@ -1471,6 +1569,34 @@ export default function App() {
               <HelpCircle className="w-3.5 h-3.5" aria-hidden="true" />
               <span>Guide</span>
             </button>
+
+            <div
+              className="min-h-[34px] px-2 border border-[var(--border-strong)] bg-[var(--bg-control)] hover:border-[var(--accent-mint)] focus-within:border-[var(--accent-mint)] flex items-center gap-1.5 shrink-0"
+              title={`Observatory Color Theme: ${activeTheme.label} — ${activeTheme.description}`}
+            >
+              <Palette className="w-3.5 h-3.5 text-[var(--accent-mint)] shrink-0" aria-hidden="true" />
+              <select
+                aria-label="Observatory Color Theme"
+                value={themeId}
+                onChange={(e) => {
+                  const nextVal = e.target.value;
+                  if (isThemeId(nextVal)) {
+                    handleSelectTheme(nextVal);
+                  }
+                }}
+                className="bg-transparent text-xs font-mono-tabular text-[var(--text-primary)] focus:outline-none cursor-pointer pr-1 py-1 whitespace-nowrap"
+              >
+                {THEME_ORDER.map((id) => (
+                  <option
+                    key={id}
+                    value={id}
+                    className="bg-[var(--bg-console)] text-[var(--text-primary)]"
+                  >
+                    {BEA_THEMES[id].label}
+                  </option>
+                ))}
+              </select>
+            </div>
 
             <TactileSwitchToggle
               checked={speechEnabled}
@@ -1540,6 +1666,7 @@ export default function App() {
             windField={windField}
             vectors={vectors}
             nightMode={observatoryNightMode}
+            theme={activeTheme}
             onToggleProjection={setProjection}
             onToggleAnomalyHeatmap={handleToggleAnomalyHeatmap}
             onToggleSolarTerminator={handleToggleSolarTerminator}
@@ -2211,6 +2338,7 @@ export default function App() {
             isPlaying={isPlaying}
             isTestingSpatial={isTestingSpatial}
             nightMode={observatoryNightMode}
+            theme={activeTheme}
           />
 
           <RadarCompassHud
@@ -2223,6 +2351,7 @@ export default function App() {
             windTelemetry={headingWind}
             atmosphericFlowEnabled={atmosphericFlowEnabled}
             nightMode={observatoryNightMode}
+            theme={activeTheme}
             auroralPulse={auroralPulse}
             solarFlare={solarFlareSignal}
             onChangeHeading={(deg) => handleSetHeading(deg)}
@@ -2347,7 +2476,10 @@ export default function App() {
                         aria-valuemin={0}
                         aria-valuemax={100}
                       >
-                        <div className={`h-full ${barColorClass}`} style={{ width: `${magPct}%` }} />
+                        <div
+                          className={`h-full transition-[width,background-color] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] ${barColorClass}`}
+                          style={{ width: `${magPct}%` }}
+                        />
                       </div>
                     </div>
                   );
@@ -2475,6 +2607,42 @@ export default function App() {
                 );
               })}
             </div>
+
+            <div className="px-3 pb-3 pt-2.5 border-t border-[var(--border-grid)] bg-[var(--bg-obsidian)] flex flex-col gap-2.5">
+              <div className="grid grid-cols-[minmax(0,1fr)_96px] items-center gap-2">
+                <TactileSwitchToggle
+                  checked={showSignalCorrelation}
+                  onToggle={handleToggleSignalCorrelation}
+                  label="Signal Correlation"
+                  accent="mint"
+                  compact
+                  icon={<ScatterChart className="w-3.5 h-3.5" />}
+                  title="Toggle real-time D3 Pearson correlation scatter plot between Brightness and Climate Anomaly telemetry"
+                />
+                <span
+                  className={`text-right text-[11px] font-mono-tabular font-semibold tabular-nums whitespace-nowrap ${
+                    correlationStats.polarity === 'positive'
+                      ? 'text-[var(--accent-mint)]'
+                      : correlationStats.polarity === 'negative'
+                      ? 'text-[var(--accent-coral)]'
+                      : 'text-[var(--text-muted)]'
+                  }`}
+                >
+                  r = {correlationStats.r >= 0 ? '+' : ''}
+                  {correlationStats.r.toFixed(3)}
+                </span>
+              </div>
+
+              {showSignalCorrelation && (
+                <SignalCorrelationPlot
+                  points={correlationPoints}
+                  stats={correlationStats}
+                  activeLayerKey={activeLayerKey}
+                  nightMode={observatoryNightMode}
+                  theme={activeTheme}
+                />
+              )}
+            </div>
           </section>
 
           <TemporalTrendsChart
@@ -2482,6 +2650,7 @@ export default function App() {
             archiveYear={archiveYear}
             maxMonths={maxMonth}
             nightMode={observatoryNightMode}
+            theme={activeTheme}
           />
         </aside>
       </main>
@@ -2511,6 +2680,7 @@ export default function App() {
         isPlaying={isPlaying}
         isTestingSpatial={isTestingSpatial}
         nightMode={observatoryNightMode}
+        theme={activeTheme}
         onClose={handleCloseOnboarding}
         onSelectLayer={handleSelectLayer}
         onRotateStep={(deltaDeg) => handleSetHeading(listenerAngle + deltaDeg)}

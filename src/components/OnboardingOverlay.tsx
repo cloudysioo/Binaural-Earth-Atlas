@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { BrandLogo } from './BrandLogo';
 import { SCALE_DEFINITIONS, ScaleMode } from '../audio/scales';
+import { BeaThemePalette, resolveTheme } from '../theme/themes';
 import {
   ARCHIVE_YEARS,
   ArchiveYear,
@@ -38,6 +39,7 @@ interface OnboardingOverlayProps {
   showAnomalyHeatmap: boolean;
   speechEnabled: boolean;
   nightMode?: boolean;
+  theme?: BeaThemePalette;
   isPlaying: boolean;
   isTestingSpatial: boolean;
   onClose: (startAudioAfter?: boolean) => void;
@@ -79,6 +81,7 @@ export const OnboardingOverlay: React.FC<OnboardingOverlayProps> = ({
   showAnomalyHeatmap,
   speechEnabled,
   nightMode = false,
+  theme,
   isPlaying,
   isTestingSpatial,
   onClose,
@@ -136,10 +139,13 @@ export const OnboardingOverlay: React.FC<OnboardingOverlayProps> = ({
   const activeDateStr = formatArchiveDate(archiveYear, monthIndex);
   const latestMonth = getMaxMonthForYear(archiveYear);
 
+  const activeTheme = resolveTheme(theme, nightMode);
+  const backdropColor = `rgba(${activeTheme.canvas.bgRgb.join(', ')}, 0.88)`;
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      style={{ backgroundColor: nightMode ? 'rgba(7, 1, 2, 0.88)' : 'rgba(6, 11, 20, 0.85)' }}
+      style={{ backgroundColor: backdropColor }}
       role="dialog"
       aria-modal="true"
       aria-labelledby="onboarding-heading"
@@ -149,7 +155,7 @@ export const OnboardingOverlay: React.FC<OnboardingOverlayProps> = ({
         {/* TOP DIALOG BAR */}
         <div className="flex items-center justify-between gap-4 px-5 py-3 border-b border-[var(--border-grid)] bg-[var(--bg-panel)]">
           <div className="flex items-center gap-2.5 min-w-0">
-            <BrandLogo size={24} nightMode={nightMode} />
+            <BrandLogo size={24} nightMode={activeTheme.isNightFilter} theme={activeTheme} />
             <span className="text-xs font-mono-tabular text-[var(--accent-mint)] font-semibold whitespace-nowrap">
               STEP 0{step + 1} / 04
             </span>

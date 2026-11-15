@@ -10,6 +10,7 @@ import {
   Legend,
 } from 'chart.js';
 import { TelemetryPoint } from '../types/bea';
+import { BeaThemePalette, resolveTheme } from '../theme/themes';
 
 Chart.register(
   CategoryScale,
@@ -26,6 +27,7 @@ interface TemporalTrendsChartProps {
   archiveYear: number;
   maxMonths: number;
   nightMode?: boolean;
+  theme?: BeaThemePalette;
 }
 
 export const TemporalTrendsChart: React.FC<TemporalTrendsChartProps> = ({
@@ -33,6 +35,7 @@ export const TemporalTrendsChart: React.FC<TemporalTrendsChartProps> = ({
   archiveYear,
   maxMonths,
   nightMode = false,
+  theme,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const chartRef = useRef<Chart<'line'> | null>(null);
@@ -133,11 +136,14 @@ export const TemporalTrendsChart: React.FC<TemporalTrendsChartProps> = ({
     const chart = chartRef.current;
     if (!chart) return;
 
-    const primaryTrace = nightMode ? '#FF453A' : '#5EEAD4';
-    const secondaryTrace = nightMode ? '#F0522E' : '#FB7185';
-    const textPrimary = nightMode ? '#FF7875' : '#F8FAFC';
-    const textMuted = nightMode ? '#F47272' : '#B9C8DC';
-    const gridColor = nightMode ? 'rgba(194, 48, 66, 0.45)' : 'rgba(75, 115, 156, 0.45)';
+    const pal = resolveTheme(theme, nightMode);
+    const c = pal.canvas;
+
+    const primaryTrace = c.primary;
+    const secondaryTrace = c.secondary;
+    const textPrimary = c.textPrimary;
+    const textMuted = c.textMuted;
+    const gridColor = c.gridLine;
 
     chart.data.labels = history.map((pt) => pt.label);
     chart.data.datasets[0].data = history.map((pt) => Number(pt.intensity.toFixed(3)));
@@ -151,8 +157,8 @@ export const TemporalTrendsChart: React.FC<TemporalTrendsChartProps> = ({
       chart.options.plugins.legend.labels.color = textPrimary;
     }
     if (chart.options.plugins?.tooltip) {
-      chart.options.plugins.tooltip.backgroundColor = nightMode ? '#070102' : '#060B14';
-      chart.options.plugins.tooltip.borderColor = nightMode ? '#C23042' : '#4B739C';
+      chart.options.plugins.tooltip.backgroundColor = c.bg;
+      chart.options.plugins.tooltip.borderColor = c.borderStrong;
       chart.options.plugins.tooltip.titleColor = textPrimary;
       chart.options.plugins.tooltip.bodyColor = textPrimary;
     }
@@ -162,7 +168,7 @@ export const TemporalTrendsChart: React.FC<TemporalTrendsChartProps> = ({
     if (chart.options.scales?.y?.grid) chart.options.scales.y.grid.color = gridColor;
 
     chart.update('none');
-  }, [history, nightMode]);
+  }, [history, nightMode, theme]);
 
   return (
     <section

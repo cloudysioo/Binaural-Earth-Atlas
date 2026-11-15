@@ -34,6 +34,7 @@ import {
   strokePackedLinesOrthographic,
   strokePackedLinesPlate,
 } from '../geo/worldBorders';
+import { BeaThemePalette, resolveTheme } from '../theme/themes';
 import { ArchiveYear, FeatureVector, LayerKey, NASA_GIBS_LAYERS } from '../types/bea';
 import {
   createWindParticlePool,
@@ -79,6 +80,7 @@ interface SatelliteMapCanvasProps {
   windField?: WindVectorField | null;
   vectors: Record<LayerKey, FeatureVector>;
   nightMode?: boolean;
+  theme?: BeaThemePalette;
   onToggleProjection: (mode: ProjectionMode) => void;
   onToggleAnomalyHeatmap: () => void;
   onToggleSolarTerminator: () => void;
@@ -174,6 +176,7 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
   windField = null,
   vectors,
   nightMode = false,
+  theme,
   onToggleProjection,
   onToggleAnomalyHeatmap,
   onToggleSolarTerminator,
@@ -182,6 +185,9 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
   onChangeStormRadarIntensity,
   onSelectBookmark,
 }) => {
+  const activeTheme = resolveTheme(theme, nightMode);
+  const cTheme = activeTheme.canvas;
+  const isOpticalNight = activeTheme.isNightFilter;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const globeCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -322,7 +328,7 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
     const ctx = target.getContext('2d');
     if (!ctx) return;
 
-    ctx.fillStyle = nightMode ? '#070102' : '#060B14';
+    ctx.fillStyle = cTheme.bg;
     ctx.fillRect(0, 0, cw, ch);
 
     const srcW = sourceCanvas?.width ?? ANALYSIS_WIDTH;
@@ -344,11 +350,11 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
         fitted.y,
         fitted.w,
         fitted.h,
-        nightMode ? 0.46 : 0.78
+        isOpticalNight ? 0.46 : 0.78
       );
     }
 
-    if (nightMode) {
+    if (isOpticalNight) {
       ctx.save();
       ctx.globalCompositeOperation = 'multiply';
       ctx.fillStyle = '#D92626';
@@ -364,7 +370,8 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
         fitted.y,
         fitted.w,
         fitted.h,
-        nightMode
+        isOpticalNight,
+        activeTheme
       );
     }
 
@@ -376,8 +383,8 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
       fitted.y,
       fitted.w,
       fitted.h,
-      nightMode ? 'rgba(185, 28, 28, 0.30)' : 'rgba(94, 234, 212, 0.28)',
-      nightMode ? 0.65 : 0.75
+      cTheme.countryBorder,
+      isOpticalNight ? 0.65 : 0.75
     );
     strokePackedLinesPlate(
       ctx,
@@ -386,13 +393,13 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
       fitted.y,
       fitted.w,
       fitted.h,
-      nightMode ? 'rgba(239, 68, 68, 0.52)' : 'rgba(241, 245, 249, 0.62)',
-      nightMode ? 0.9 : 1.0
+      cTheme.coastline,
+      isOpticalNight ? 0.9 : 1.0
     );
 
     // Geodetic graticules & reticle mapped directly to the fitted Plate Carrée bounds
     ctx.save();
-    ctx.strokeStyle = nightMode ? 'rgba(185, 28, 28, 0.20)' : 'rgba(94, 234, 212, 0.18)';
+    ctx.strokeStyle = `rgba(${cTheme.primaryRgb}, 0.18)`;
     ctx.lineWidth = 1;
 
     for (let lon = -150; lon <= 150; lon += 30) {
@@ -412,7 +419,7 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
     }
 
     // Equator & Prime Meridian
-    ctx.strokeStyle = nightMode ? 'rgba(220, 38, 38, 0.34)' : 'rgba(94, 234, 212, 0.36)';
+    ctx.strokeStyle = `rgba(${cTheme.primaryRgb}, 0.36)`;
     ctx.beginPath();
     ctx.moveTo(fitted.x, fitted.y + fitted.h / 2);
     ctx.lineTo(fitted.x + fitted.w, fitted.y + fitted.h / 2);
@@ -423,8 +430,8 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
     // High-contrast bounding reticle
     const pad = 12;
     const arm = Math.min(22, Math.floor(Math.min(fitted.w, fitted.h) * 0.08));
-    ctx.strokeStyle = nightMode ? '#DC2626' : '#5EEAD4';
-    ctx.lineWidth = nightMode ? 1.5 : 2;
+    ctx.strokeStyle = cTheme.primary;
+    ctx.lineWidth = isOpticalNight ? 1.5 : 2;
     ctx.beginPath();
     ctx.moveTo(fitted.x + pad, fitted.y + pad + arm);
     ctx.lineTo(fitted.x + pad, fitted.y + pad);
@@ -443,7 +450,8 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
     ctx.lineTo(fitted.x + fitted.w - pad, fitted.y + fitted.h - pad - arm);
     ctx.stroke();
 
-    ctx.fillStyle = nightMode ? 'rgba(255, 92, 88, 0.78)' : 'rgba(241, 245, 249, 0.8)';
+    ctx.globalAlpha = 0.82;
+    ctx.fillStyle = cTheme.textPrimary;
     ctx.font = '11px "JetBrains Mono", monospace';
     ctx.fillText('90°N', fitted.x + 18, fitted.y + 26);
     ctx.fillText('00° EQ', fitted.x + 18, fitted.y + fitted.h / 2 - 6);
@@ -460,7 +468,9 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
     anomalyField,
     showSolarTerminator,
     solarPosition,
-    nightMode,
+    isOpticalNight,
+    activeTheme,
+    cTheme,
   ]);
 
   // Render Anti-Aliased Orthographic 3D Globe fitted cleanly to container dimensions
@@ -492,9 +502,7 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
     const sinPhi0 = Math.sin(phi0);
     const cosPhi0 = Math.cos(phi0);
 
-    const bgR = nightMode ? 7 : 6;
-    const bgG = nightMode ? 1 : 11;
-    const bgB = nightMode ? 2 : 20;
+    const [bgR, bgG, bgB] = cTheme.bgRgb;
 
     for (let i = 0; i < out.length; i += 4) {
       out[i] = bgR;
@@ -550,13 +558,13 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
 
         if (showAnomalyHeatmap && anomalyField) {
           const hData = anomalyField.heatmapData;
-          const hAlpha = (hData[sIdx + 3] / 255) * (nightMode ? 0.46 : 0.78);
+          const hAlpha = (hData[sIdx + 3] / 255) * (isOpticalNight ? 0.46 : 0.78);
           baseR = baseR * (1 - hAlpha) + hData[sIdx] * hAlpha;
           baseG = baseG * (1 - hAlpha) + hData[sIdx + 1] * hAlpha;
           baseB = baseB * (1 - hAlpha) + hData[sIdx + 2] * hAlpha;
         }
 
-        if (nightMode) {
+        if (isOpticalNight) {
           // Dark-adapted crimson optical filter attenuates high-luminance green/blue channels
           const lum = 0.299 * baseR + 0.587 * baseG + 0.114 * baseB;
           baseR = Math.min(255, lum * 0.8 + baseR * 0.14);
@@ -570,7 +578,7 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
             Math.cos(latRad) *
               solarPosition.cosDecl *
               Math.cos(lonRad - solarPosition.subsolarLonRad);
-          [baseR, baseG, baseB] = shadePixelBySolarCosZ(baseR, baseG, baseB, cosZ, nightMode);
+          [baseR, baseG, baseB] = shadePixelBySolarCosZ(baseR, baseG, baseB, cosZ, isOpticalNight);
         }
 
         const limbShade = 0.65 + 0.35 * cosC;
@@ -587,7 +595,7 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
 
     ctx.putImageData(outImg, 0, 0);
 
-    if (showAnomalyHeatmap && anomalyField && !nightMode) {
+    if (showAnomalyHeatmap && anomalyField && !isOpticalNight) {
       renderD3HeatmapContoursOrthographic(
         ctx,
         anomalyField,
@@ -608,8 +616,8 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
       cx,
       cy,
       R,
-      nightMode ? 'rgba(185, 28, 28, 0.32)' : 'rgba(94, 234, 212, 0.34)',
-      nightMode ? 0.7 : 0.85
+      cTheme.countryBorder,
+      isOpticalNight ? 0.7 : 0.85
     );
     strokePackedLinesOrthographic(
       ctx,
@@ -619,20 +627,17 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
       cx,
       cy,
       R,
-      nightMode ? 'rgba(239, 68, 68, 0.56)' : 'rgba(241, 245, 249, 0.72)',
-      nightMode ? 1.0 : 1.15
+      cTheme.coastline,
+      isOpticalNight ? 1.0 : 1.15
     );
 
     ctx.save();
     ctx.lineWidth = 1;
     for (let latDeg = -60; latDeg <= 60; latDeg += 30) {
-      ctx.strokeStyle = nightMode
-        ? latDeg === 0
-          ? 'rgba(220, 38, 38, 0.35)'
-          : 'rgba(185, 28, 28, 0.16)'
-        : latDeg === 0
-        ? 'rgba(94, 234, 212, 0.35)'
-        : 'rgba(94, 234, 212, 0.14)';
+      ctx.strokeStyle =
+        latDeg === 0
+          ? `rgba(${cTheme.primaryRgb}, 0.35)`
+          : `rgba(${cTheme.primaryRgb}, 0.14)`;
       ctx.beginPath();
       let started = false;
       const latR = (latDeg * Math.PI) / 180;
@@ -653,13 +658,10 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
     }
 
     for (let lonDeg = -180; lonDeg < 180; lonDeg += 30) {
-      ctx.strokeStyle = nightMode
-        ? lonDeg === 0
-          ? 'rgba(220, 38, 38, 0.35)'
-          : 'rgba(185, 28, 28, 0.16)'
-        : lonDeg === 0
-        ? 'rgba(94, 234, 212, 0.35)'
-        : 'rgba(94, 234, 212, 0.14)';
+      ctx.strokeStyle =
+        lonDeg === 0
+          ? `rgba(${cTheme.primaryRgb}, 0.35)`
+          : `rgba(${cTheme.primaryRgb}, 0.14)`;
       ctx.beginPath();
       let started = false;
       const lonR = (lonDeg * Math.PI) / 180;
@@ -679,19 +681,19 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
       ctx.stroke();
     }
 
-    ctx.strokeStyle = nightMode ? '#B91C1C' : '#5EEAD4';
-    ctx.lineWidth = nightMode ? 1.15 : 1.5;
+    ctx.strokeStyle = cTheme.primary;
+    ctx.lineWidth = isOpticalNight ? 1.15 : 1.5;
     ctx.beginPath();
     ctx.arc(cx, cy, R, 0, Math.PI * 2);
     ctx.stroke();
 
-    ctx.strokeStyle = nightMode ? 'rgba(185, 28, 28, 0.14)' : 'rgba(94, 234, 212, 0.22)';
+    ctx.strokeStyle = `rgba(${cTheme.primaryRgb}, ${isOpticalNight ? 0.16 : 0.22})`;
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.arc(cx, cy, R + 12, 0, Math.PI * 2);
     ctx.stroke();
 
-    ctx.strokeStyle = nightMode ? 'rgba(220, 38, 38, 0.28)' : 'rgba(94, 234, 212, 0.35)';
+    ctx.strokeStyle = `rgba(${cTheme.primaryRgb}, 0.32)`;
     ctx.beginPath();
     ctx.moveTo(cx - R - 20, cy);
     ctx.lineTo(cx - R - 4, cy);
@@ -703,7 +705,7 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
     ctx.lineTo(cx, cy + R + 20);
     ctx.stroke();
 
-    ctx.fillStyle = nightMode ? 'rgba(217, 72, 72, 0.85)' : 'rgba(148, 163, 184, 0.85)';
+    ctx.fillStyle = cTheme.textMuted;
     ctx.font = '11px "JetBrains Mono", monospace';
     const cLatStr = `${Math.abs(globeCenter.lat).toFixed(0)}°${globeCenter.lat >= 0 ? 'N' : 'S'}`;
     const cLonStr = `${Math.abs(globeCenter.lon).toFixed(0)}°${globeCenter.lon >= 0 ? 'E' : 'W'}`;
@@ -721,22 +723,10 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
       );
       if (pt) {
         const isCurrent = bm.layerKey === activeLayerKey;
-        ctx.strokeStyle = nightMode
-          ? isCurrent
-            ? '#FF3B30'
-            : 'rgba(217, 72, 72, 0.65)'
-          : isCurrent
-          ? '#5EEAD4'
-          : 'rgba(241, 245, 249, 0.72)';
-        ctx.lineWidth = nightMode ? 1.15 : 1.5;
+        ctx.strokeStyle = isCurrent ? cTheme.primary : cTheme.textMuted;
+        ctx.lineWidth = isOpticalNight ? 1.15 : 1.5;
         ctx.strokeRect(pt[0] - 5, pt[1] - 5, 10, 10);
-        ctx.fillStyle = nightMode
-          ? isCurrent
-            ? '#FF3B30'
-            : '#FF5C58'
-          : isCurrent
-          ? '#5EEAD4'
-          : '#F1F5F9';
+        ctx.fillStyle = isCurrent ? cTheme.primary : cTheme.textPrimary;
         ctx.font = '10px "JetBrains Mono", monospace';
         ctx.fillText(bm.label, pt[0] + 8, pt[1] + 3);
       }
@@ -752,7 +742,8 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
         cx,
         cy,
         R,
-        nightMode
+        isOpticalNight,
+        activeTheme
       );
     }
   }, [
@@ -767,7 +758,9 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
     anomalyField,
     showSolarTerminator,
     solarPosition,
-    nightMode,
+    isOpticalNight,
+    activeTheme,
+    cTheme,
   ]);
 
   // Dedicated 60fps Wind Flow Streamline animation layer across both 3D Globe & 2D Plate Carree
@@ -819,7 +812,8 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
         particles: windParticlesRef.current,
         globeCenter,
         fittedRect: fitted,
-        nightMode,
+        nightMode: isOpticalNight,
+        theme: activeTheme,
       });
 
       rafId = window.requestAnimationFrame(tick);
@@ -837,7 +831,8 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
     globeCenter,
     containerSize,
     sourceCanvas,
-    nightMode,
+    isOpticalNight,
+    activeTheme,
   ]);
 
   // Dedicated animated D3 Storm Radar pressure-contour layer across both 3D Globe & 2D Plate Carree
@@ -886,7 +881,8 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
         timeSec,
         globeCenter,
         fittedRect: getFitted(),
-        nightMode,
+        nightMode: isOpticalNight,
+        theme: activeTheme,
       });
 
     const initialMetrics = drawFrame(stormRadarTimeRef.current);
@@ -936,7 +932,8 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
     globeCenter,
     containerSize,
     sourceCanvas,
-    nightMode,
+    isOpticalNight,
+    activeTheme,
   ]);
 
   const samplePointTelemetry = (
@@ -1344,17 +1341,11 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
 
             const isHighAnomaly = probeInfo.anomalyPct >= 60;
             const isElevatedAnomaly = probeInfo.anomalyPct >= 35 && probeInfo.anomalyPct < 60;
-            const accentHex = nightMode
-              ? isHighAnomaly
-                ? '#FF6B4A'
-                : isElevatedAnomaly
-                ? '#E04826'
-                : '#FF3B30'
-              : isHighAnomaly
-              ? '#FB7185'
+            const accentHex = isHighAnomaly
+              ? cTheme.secondary
               : isElevatedAnomaly
-              ? '#F59E0B'
-              : '#5EEAD4';
+              ? cTheme.tertiary
+              : cTheme.primary;
 
             return (
               <div
@@ -1364,7 +1355,7 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
                   left: `${left}px`,
                   top: `${top}px`,
                   borderColor: accentHex,
-                  backgroundColor: nightMode ? 'rgba(7, 1, 2, 0.95)' : 'rgba(6, 11, 20, 0.95)',
+                  backgroundColor: cTheme.bgTooltip,
                 }}
               >
                 <div className="flex items-center justify-between text-[var(--text-primary)] font-semibold">
@@ -1465,11 +1456,14 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
                   WIND FLOW
                 </span>
                 <div className="flex items-center gap-2 flex-wrap">
-                  {WIND_SPEED_LEGEND_STOPS.map((stop) => (
+                  {WIND_SPEED_LEGEND_STOPS.map((stop, idx) => (
                     <span key={stop.label} className="inline-flex items-center gap-1 text-[var(--text-muted)]">
                       <span
                         className="inline-block w-2.5 h-[2px]"
-                        style={{ backgroundColor: nightMode ? stop.nightColor : stop.color }}
+                        style={{
+                          backgroundColor:
+                            cTheme.windStops[idx] ?? (isOpticalNight ? stop.nightColor : stop.color),
+                        }}
                         aria-hidden="true"
                       />
                       {stop.label}
@@ -1536,7 +1530,7 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
                   STORM RADAR (D3 ISOBARS)
                 </span>
                 <div className="flex items-center gap-2.5 flex-wrap">
-                  {STORM_RADAR_LEGEND_STOPS.map((stop) => (
+                  {STORM_RADAR_LEGEND_STOPS.map((stop, idx) => (
                     <span
                       key={stop.pressureHpa}
                       className="inline-flex items-center gap-1 text-[var(--text-muted)] whitespace-nowrap"
@@ -1546,7 +1540,9 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
                         style={{
                           borderTopWidth: '2px',
                           borderTopStyle: stop.dashed ? 'dashed' : 'solid',
-                          borderTopColor: nightMode ? stop.nightColor : stop.color,
+                          borderTopColor:
+                            cTheme.stormStops[idx] ??
+                            (isOpticalNight ? stop.nightColor : stop.color),
                         }}
                         aria-hidden="true"
                       />
@@ -1581,7 +1577,7 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
                 <div className="flex items-center gap-1.5">
                   <span className="text-[var(--text-muted)]">{ANOMALY_MIN_C.toFixed(1)}°C</span>
                   <div
-                    className={`flex border border-[var(--border-strong)] h-3 ${nightMode ? 'opacity-75' : ''}`}
+                    className={`flex border border-[var(--border-strong)] h-3 ${isOpticalNight ? 'opacity-75' : ''}`}
                     role="img"
                     aria-label="D3 RdBu diverging temperature anomaly ramp from -3.5 to +3.5 degrees Celsius"
                   >

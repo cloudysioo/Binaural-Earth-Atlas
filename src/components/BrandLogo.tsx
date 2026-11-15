@@ -1,25 +1,30 @@
 import React from 'react';
+import { BeaThemePalette, resolveTheme } from '../theme/themes';
 
 interface BrandLogoProps {
   size?: number;
   className?: string;
   nightMode?: boolean;
+  theme?: BeaThemePalette;
 }
 
 export const BrandLogo: React.FC<BrandLogoProps> = ({
   size = 34,
   className = '',
   nightMode = false,
+  theme,
 }) => {
-  const cStart = nightMode ? '#B91C1C' : '#38BDF8';
-  const cMid = nightMode ? '#DC2626' : '#2DD4BF';
-  const cEnd = nightMode ? '#FF3B30' : '#5EEAD4';
-  const cBg = nightMode ? '#070102' : '#060B14';
-  const cCup = nightMode ? '#100305' : '#0B1320';
-  const cHighlight = nightMode ? '#FF6B4A' : '#E0F2FE';
-  const cLandStroke = nightMode ? '#FF5C58' : '#BAE6FD';
-  const cLandEast = nightMode ? '#FF3B30' : '#CCFBF1';
-  const cGrid = nightMode ? '#DC2626' : '#7DD3FC';
+  const pal = resolveTheme(theme, nightMode);
+  const c = pal.canvas;
+  const cStart = c.logoStart;
+  const cMid = c.logoMid;
+  const cEnd = c.logoEnd;
+  const cBg = c.bg;
+  const cCup = c.logoCup;
+  const cHighlight = c.logoHighlight;
+  const cLandStroke = c.logoLandStroke;
+  const cLandEast = c.logoLandEast;
+  const cGrid = c.logoGrid;
 
   return (
     <svg
@@ -37,8 +42,8 @@ export const BrandLogo: React.FC<BrandLogoProps> = ({
           <stop offset="100%" stopColor={cEnd} />
         </linearGradient>
         <radialGradient id="beaGlobeGlow" cx="42%" cy="38%" r="62%">
-          <stop offset="0%" stopColor={cStart} stopOpacity={nightMode ? '0.32' : '0.48'} />
-          <stop offset="55%" stopColor={cMid} stopOpacity={nightMode ? '0.16' : '0.22'} />
+          <stop offset="0%" stopColor={cStart} stopOpacity={pal.isNightFilter ? '0.32' : '0.48'} />
+          <stop offset="55%" stopColor={cMid} stopOpacity={pal.isNightFilter ? '0.16' : '0.22'} />
           <stop offset="100%" stopColor={cBg} stopOpacity="0.94" />
         </radialGradient>
         <clipPath id="beaGlobeClip">

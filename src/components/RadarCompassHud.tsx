@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import { Magnet, RotateCw, Zap } from 'lucide-react';
 import { HeadingWindTelemetry } from '../analysis/windVectorField';
 import { SpatialPanningMode } from '../audio/audioEngine';
+import { BeaThemePalette, resolveTheme } from '../theme/themes';
 import {
   azimuthToLayerKey,
   FeatureVector,
@@ -76,6 +77,7 @@ interface RadarCompassHudProps {
   windTelemetry?: HeadingWindTelemetry | null;
   atmosphericFlowEnabled?: boolean;
   nightMode?: boolean;
+  theme?: BeaThemePalette;
   auroralPulse?: AuroralPulseSignal | null;
   solarFlare?: SolarFlareSignal | null;
   onChangeHeading: (angleDeg: number) => void;
@@ -95,6 +97,7 @@ export const RadarCompassHud: React.FC<RadarCompassHudProps> = ({
   windTelemetry = null,
   atmosphericFlowEnabled = true,
   nightMode = false,
+  theme,
   auroralPulse = null,
   solarFlare = null,
   onChangeHeading,
@@ -112,6 +115,7 @@ export const RadarCompassHud: React.FC<RadarCompassHudProps> = ({
     windTelemetry,
     atmosphericFlowEnabled,
     nightMode,
+    theme,
     magneticSnap,
     auroralPulse,
     solarFlare,
@@ -123,6 +127,7 @@ export const RadarCompassHud: React.FC<RadarCompassHudProps> = ({
     windTelemetry,
     atmosphericFlowEnabled,
     nightMode,
+    theme,
     magneticSnap,
     auroralPulse,
     solarFlare,
@@ -150,10 +155,15 @@ export const RadarCompassHud: React.FC<RadarCompassHudProps> = ({
         windTelemetry: currentWind,
         atmosphericFlowEnabled: flowOn,
         nightMode: isNightMode,
+        theme: currentTheme,
         magneticSnap: isMagneticSnap,
         auroralPulse: activeAuroralPulse,
         solarFlare: activeSolarFlare,
       } = latestPropsRef.current;
+
+      const pal = resolveTheme(currentTheme, isNightMode);
+      const c = pal.canvas;
+      const isNight = pal.isNightFilter;
 
       const activeVec = currentVectors[activeKey];
       const activeEnergy = Math.min(
@@ -179,11 +189,11 @@ export const RadarCompassHud: React.FC<RadarCompassHudProps> = ({
       const cy = h / 2;
       const maxR = 104;
 
-      ctx.fillStyle = isNightMode ? '#070102' : '#060B14';
+      ctx.fillStyle = c.bg;
       ctx.fillRect(0, 0, w, h);
 
       // Concentric range rings
-      ctx.strokeStyle = isNightMode ? 'rgba(194, 48, 66, 0.55)' : 'rgba(75, 115, 156, 0.58)';
+      ctx.strokeStyle = c.gridLine;
       ctx.lineWidth = 1;
       for (const ratio of [0.33, 0.66, 1.0]) {
         ctx.beginPath();
@@ -197,12 +207,10 @@ export const RadarCompassHud: React.FC<RadarCompassHudProps> = ({
         const inner = deg % 90 === 0 ? maxR - 8 : deg % 45 === 0 ? maxR - 5 : maxR - 3;
         ctx.strokeStyle =
           deg % 90 === 0
-            ? isNightMode
-              ? '#DC2626'
-              : '#5EEAD4'
-            : isNightMode
+            ? c.primary
+            : isNight
             ? 'rgba(185, 28, 28, 0.38)'
-            : 'rgba(148, 163, 184, 0.35)';
+            : `rgba(${c.primaryRgb}, 0.32)`;
         ctx.beginPath();
         ctx.moveTo(cx + Math.cos(rad) * inner, cy + Math.sin(rad) * inner);
         ctx.lineTo(cx + Math.cos(rad) * maxR, cy + Math.sin(rad) * maxR);
@@ -210,7 +218,7 @@ export const RadarCompassHud: React.FC<RadarCompassHudProps> = ({
       }
 
       // Orthogonal axes
-      ctx.strokeStyle = isNightMode ? 'rgba(77, 17, 25, 0.8)' : 'rgba(26, 46, 68, 0.8)';
+      ctx.strokeStyle = c.axisLine;
       ctx.beginPath();
       ctx.moveTo(cx - maxR - 8, cy);
       ctx.lineTo(cx + maxR + 8, cy);
@@ -223,9 +231,9 @@ export const RadarCompassHud: React.FC<RadarCompassHudProps> = ({
       const halfCone = (22.5 * Math.PI) / 180;
 
       ctx.save();
-      ctx.fillStyle = isNightMode ? 'rgba(220, 38, 38, 0.14)' : 'rgba(94, 234, 212, 0.22)';
-      ctx.strokeStyle = isNightMode ? '#DC2626' : '#5EEAD4';
-      ctx.lineWidth = isNightMode ? 1.25 : 1.5;
+      ctx.fillStyle = `rgba(${c.primaryRgb}, ${isNight ? 0.14 : 0.22})`;
+      ctx.strokeStyle = c.primary;
+      ctx.lineWidth = isNight ? 1.25 : 1.5;
       ctx.beginPath();
       ctx.moveTo(cx, cy);
       ctx.arc(cx, cy, maxR, headingRad - halfCone, headingRad + halfCone);
@@ -233,8 +241,8 @@ export const RadarCompassHud: React.FC<RadarCompassHudProps> = ({
       ctx.fill();
       ctx.stroke();
 
-      ctx.strokeStyle = isNightMode ? '#FF3B30' : '#5EEAD4';
-      ctx.lineWidth = isNightMode ? 1.5 : 2;
+      ctx.strokeStyle = c.primary;
+      ctx.lineWidth = isNight ? 1.5 : 2;
       ctx.beginPath();
       ctx.moveTo(cx, cy);
       ctx.lineTo(cx + Math.cos(headingRad) * maxR, cy + Math.sin(headingRad) * maxR);
@@ -246,13 +254,9 @@ export const RadarCompassHud: React.FC<RadarCompassHudProps> = ({
         const windArcSpan = Math.max(0.08, currentWind.intensity * (Math.PI * 0.65));
         ctx.save();
         ctx.strokeStyle = currentWind.isHighWindOcean
-          ? isNightMode
-            ? 'rgba(255, 107, 74, 0.72)'
-            : 'rgba(245, 158, 11, 0.85)'
-          : isNightMode
-          ? 'rgba(220, 38, 38, 0.45)'
-          : 'rgba(56, 189, 248, 0.65)';
-        ctx.lineWidth = isNightMode ? 1.6 : 2.2;
+          ? `rgba(${c.tertiaryRgb}, ${isNight ? 0.72 : 0.85})`
+          : `rgba(${c.skyRgb}, ${isNight ? 0.45 : 0.65})`;
+        ctx.lineWidth = isNight ? 1.6 : 2.2;
         ctx.beginPath();
         ctx.arc(cx, cy, maxR + 6, headingRad - windArcSpan, headingRad + windArcSpan);
         ctx.stroke();
@@ -272,8 +276,8 @@ export const RadarCompassHud: React.FC<RadarCompassHudProps> = ({
       }
 
       // Animated HRTF-Focus pulses + targets at 12, 3, 6, and 9 o'clock positions
-      const bloomScale = isNightMode ? 0.5 : 1.0;
-      const radiusScale = isNightMode ? 0.72 : 1.0;
+      const bloomScale = isNight ? 0.5 : 1.0;
+      const radiusScale = isNight ? 0.72 : 1.0;
 
       LAYER_ORDER.forEach((key, idx) => {
         const meta = NASA_GIBS_LAYERS[key];
@@ -288,17 +292,14 @@ export const RadarCompassHud: React.FC<RadarCompassHudProps> = ({
         const focusWeight = 0.45 + 0.55 * Math.max(0, Math.cos((shortest * Math.PI) / 180));
 
         // Dual concentric wavefronts scaled dynamically by active layer's feature vector & HRTF focus
-        const baseColorRgb = isNightMode
-          ? nodeAnomaly > 0.55 || (isActive && activeTension > 0.5)
-            ? '255, 107, 74'
+        const baseColorRgb =
+          nodeAnomaly > 0.55 || (isActive && activeTension > 0.5)
+            ? c.secondaryRgb
             : isActive
-            ? '255, 59, 48'
-            : '185, 28, 28'
-          : nodeAnomaly > 0.55 || (isActive && activeTension > 0.5)
-          ? '251, 113, 133'
-          : isActive
-          ? '94, 234, 212'
-          : '148, 163, 184';
+            ? c.primaryRgb
+            : isNight
+            ? '185, 28, 28'
+            : '148, 163, 184';
 
         const maxPulseRadius =
           ((isActive ? 14 : 9) + activeEnergy * (isActive ? 14 : 7) + focusWeight * 5) *
@@ -319,7 +320,7 @@ export const RadarCompassHud: React.FC<RadarCompassHudProps> = ({
           if (alpha > 0.01) {
             ctx.save();
             ctx.strokeStyle = `rgba(${baseColorRgb}, ${alpha.toFixed(3)})`;
-            ctx.lineWidth = isNightMode ? 1.0 : isActive ? 1.4 : 1.0;
+            ctx.lineWidth = isNight ? 1.0 : isActive ? 1.4 : 1.0;
             ctx.beginPath();
             ctx.arc(tx, ty, pulseR, 0, Math.PI * 2);
             ctx.stroke();
@@ -332,7 +333,7 @@ export const RadarCompassHud: React.FC<RadarCompassHudProps> = ({
           const reticleHalf = 7 + activeEnergy * 2;
           ctx.strokeStyle = `rgba(${baseColorRgb}, ${(
             (0.45 + 0.45 * activeEnergy) *
-            (isNightMode ? 0.72 : 1)
+            (isNight ? 0.72 : 1)
           ).toFixed(3)})`;
           ctx.lineWidth = 1;
           ctx.strokeRect(
@@ -344,22 +345,19 @@ export const RadarCompassHud: React.FC<RadarCompassHudProps> = ({
         }
 
         const markerSize = isActive ? 10 : 7;
-        ctx.fillStyle = isNightMode
-          ? nodeAnomaly > 0.55
-            ? '#FF6B4A'
+        ctx.fillStyle =
+          nodeAnomaly > 0.55
+            ? c.secondary
             : isActive
-            ? '#FF3B30'
-            : '#B91C1C'
-          : nodeAnomaly > 0.55
-          ? '#FB7185'
-          : isActive
-          ? '#5EEAD4'
-          : '#94A3B8';
+            ? c.primary
+            : isNight
+            ? c.borderStrong
+            : '#94A3B8';
         ctx.fillRect(tx - markerSize / 2, ty - markerSize / 2, markerSize, markerSize);
 
         if (isMagneticSnap && nodeAnomaly >= 0.36) {
           ctx.save();
-          ctx.strokeStyle = isNightMode ? '#FF6B4A' : '#FB7185';
+          ctx.strokeStyle = c.secondary;
           ctx.lineWidth = 1.35;
           ctx.strokeRect(tx - 10, ty - 10, 20, 20);
           ctx.restore();
@@ -367,13 +365,7 @@ export const RadarCompassHud: React.FC<RadarCompassHudProps> = ({
 
         const lx = cx + Math.cos(rad) * (maxR + 20);
         const ly = cy + Math.sin(rad) * (maxR + 18);
-        ctx.fillStyle = isNightMode
-          ? isActive
-            ? '#FF3B30'
-            : '#FF5C58'
-          : isActive
-          ? '#5EEAD4'
-          : '#F1F5F9';
+        ctx.fillStyle = isActive ? c.primary : c.textPrimary;
         ctx.font = isActive
           ? '700 11px "JetBrains Mono", monospace'
           : '500 11px "JetBrains Mono", monospace';
@@ -401,11 +393,9 @@ export const RadarCompassHud: React.FC<RadarCompassHudProps> = ({
       // Ambient steady low-glow ring marking peak anomaly heading when intensity is elevated
       if (!isAuroralBurstActive && peakTarget.peakAnomaly >= 0.36) {
         const idleBreath = prefersReducedMotion ? 0.55 : 0.45 + 0.55 * Math.sin(phase * Math.PI * 2);
-        const ambientAlpha = (0.14 + 0.14 * idleBreath) * (isNightMode ? 0.65 : 1);
+        const ambientAlpha = (0.14 + 0.14 * idleBreath) * (isNight ? 0.65 : 1);
         ctx.save();
-        ctx.strokeStyle = isNightMode
-          ? `rgba(255, 107, 74, ${ambientAlpha.toFixed(3)})`
-          : `rgba(52, 211, 153, ${ambientAlpha.toFixed(3)})`;
+        ctx.strokeStyle = `rgba(${c.auroraPrimaryRgb}, ${ambientAlpha.toFixed(3)})`;
         ctx.lineWidth = 1.25;
         ctx.beginPath();
         ctx.arc(px, py, 13 + idleBreath * 3, 0, Math.PI * 2);
@@ -418,7 +408,7 @@ export const RadarCompassHud: React.FC<RadarCompassHudProps> = ({
           ? 0.42
           : Math.min(1, elapsedAuroralSec / AURORAL_PULSE_DURATION_SEC);
         const burstIntensity = Math.max(0.45, Math.min(1, activeAuroralPulse.intensity));
-        const nightBloom = isNightMode ? 0.58 : 1.0;
+        const nightBloom = isNight ? 0.58 : 1.0;
 
         // Quantized sample-and-hold shimmer step synced to SolarChimeSynth's digital stutter
         const glitchTick = Math.floor(elapsedAuroralSec * 44);
@@ -430,9 +420,7 @@ export const RadarCompassHud: React.FC<RadarCompassHudProps> = ({
         // 1. Subtle radial azimuth ray connecting center listener to the peak-anomaly aurora ring
         const rayAlpha = (1 - pulseNorm) * 0.42 * burstIntensity * nightBloom;
         ctx.save();
-        ctx.strokeStyle = isNightMode
-          ? `rgba(255, 107, 74, ${rayAlpha.toFixed(3)})`
-          : `rgba(52, 211, 153, ${rayAlpha.toFixed(3)})`;
+        ctx.strokeStyle = `rgba(${c.auroraPrimaryRgb}, ${rayAlpha.toFixed(3)})`;
         ctx.lineWidth = 1.5;
         ctx.setLineDash([4, 3]);
         ctx.beginPath();
@@ -446,16 +434,11 @@ export const RadarCompassHud: React.FC<RadarCompassHudProps> = ({
         const coronaAlpha = (1 - Math.pow(pulseNorm, 1.3)) * 0.55 * burstIntensity * nightBloom;
         ctx.save();
         const auraGrad = ctx.createRadialGradient(px, py, 2, px, py, coronaRadius);
-        if (isNightMode) {
-          auraGrad.addColorStop(0, `rgba(255, 130, 80, ${(coronaAlpha * 0.9).toFixed(3)})`);
-          auraGrad.addColorStop(0.5, `rgba(255, 59, 48, ${(coronaAlpha * 0.48).toFixed(3)})`);
-          auraGrad.addColorStop(1, 'rgba(255, 59, 48, 0)');
-        } else {
-          auraGrad.addColorStop(0, `rgba(110, 231, 183, ${(coronaAlpha * 0.95).toFixed(3)})`);
-          auraGrad.addColorStop(0.45, `rgba(245, 158, 11, ${(coronaAlpha * 0.55).toFixed(3)})`);
-          auraGrad.addColorStop(0.8, `rgba(56, 189, 248, ${(coronaAlpha * 0.25).toFixed(3)})`);
-          auraGrad.addColorStop(1, 'rgba(52, 211, 153, 0)');
-        }
+        auraGrad.addColorStop(0, c.auroraCorona[0]);
+        auraGrad.addColorStop(0.5, c.auroraCorona[1]);
+        auraGrad.addColorStop(0.85, c.auroraCorona[2]);
+        auraGrad.addColorStop(1, `rgba(${c.auroraPrimaryRgb}, 0)`);
+        ctx.globalAlpha = Math.min(1, Math.max(0, coronaAlpha * 1.4));
         ctx.fillStyle = auraGrad;
         ctx.beginPath();
         ctx.arc(px, py, coronaRadius, 0, Math.PI * 2);
@@ -472,28 +455,18 @@ export const RadarCompassHud: React.FC<RadarCompassHudProps> = ({
           const easeOut = 1 - Math.pow(1 - gNorm, 2.2);
           const ringRadius =
             (7 + easeOut * (22 * grain.radiusScale + burstIntensity * 4) + glitchJitter * 0.45) *
-            (isNightMode ? 0.85 : 1);
+            (isNight ? 0.85 : 1);
           const ringAlpha =
             Math.max(0, (1 - gNorm) * 0.92 * grain.weight * burstIntensity) * nightBloom;
 
           if (ringAlpha <= 0.02) return;
 
           const isGlitchGrain = grainIdx === 1 || grainIdx === 2 || grainIdx === 4;
-          const strokeRgb = isNightMode
-            ? isGlitchGrain
-              ? '255, 140, 82'
-              : '255, 68, 56'
-            : isGlitchGrain
-            ? '251, 191, 36'
-            : '52, 211, 153';
+          const strokeRgb = isGlitchGrain ? c.auroraGlitchRgb : c.auroraPrimaryRgb;
 
           ctx.save();
-          ctx.shadowColor = isNightMode
-            ? 'rgba(255, 107, 74, 0.9)'
-            : isGlitchGrain
-            ? 'rgba(251, 191, 36, 0.92)'
-            : 'rgba(52, 211, 153, 0.95)';
-          ctx.shadowBlur = isNightMode ? 7 : 14;
+          ctx.shadowColor = `rgba(${strokeRgb}, 0.92)`;
+          ctx.shadowBlur = isNight ? 7 : 14;
           ctx.strokeStyle = `rgba(${strokeRgb}, ${Math.min(1, ringAlpha).toFixed(3)})`;
           ctx.lineWidth = isGlitchGrain ? 1.6 : 2.3;
           if (isGlitchGrain) {
@@ -509,11 +482,9 @@ export const RadarCompassHud: React.FC<RadarCompassHudProps> = ({
         const sectorSpan = 0.24 + (1 - pulseNorm) * 0.16;
         const arcAlpha = (1 - pulseNorm) * 0.88 * burstIntensity * nightBloom;
         ctx.save();
-        ctx.shadowColor = isNightMode ? '#FF6B4A' : '#34D399';
-        ctx.shadowBlur = isNightMode ? 6 : 12;
-        ctx.strokeStyle = isNightMode
-          ? `rgba(255, 120, 74, ${arcAlpha.toFixed(3)})`
-          : `rgba(110, 231, 183, ${arcAlpha.toFixed(3)})`;
+        ctx.shadowColor = `rgb(${c.auroraPrimaryRgb})`;
+        ctx.shadowBlur = isNight ? 6 : 12;
+        ctx.strokeStyle = `rgba(${c.auroraPrimaryRgb}, ${arcAlpha.toFixed(3)})`;
         ctx.lineWidth = 3;
         ctx.beginPath();
         ctx.arc(cx, cy, maxR, peakRad - sectorSpan, peakRad + sectorSpan);
@@ -538,22 +509,18 @@ export const RadarCompassHud: React.FC<RadarCompassHudProps> = ({
           0.65,
           Math.min(1.25, (activeSolarFlare.solarWindKms - 550) / 320 + 0.65)
         );
-        const nightScale = isNightMode ? 0.68 : 1.0;
+        const nightScale = isNight ? 0.68 : 1.0;
 
         // 1. Crisp angular square shock-frame perimeter flash & 90-degree corner brackets
         const frameAlpha = Math.max(0, 1 - flareNorm * 1.15) * 0.92 * nightScale;
         if (frameAlpha > 0.02) {
           ctx.save();
-          ctx.strokeStyle = isNightMode
-            ? `rgba(255, 72, 66, ${(frameAlpha * 0.72).toFixed(3)})`
-            : `rgba(251, 113, 133, ${(frameAlpha * 0.68).toFixed(3)})`;
+          ctx.strokeStyle = `rgba(${c.flarePrimaryRgb}, ${(frameAlpha * 0.7).toFixed(3)})`;
           ctx.lineWidth = 1.5;
           ctx.strokeRect(4, 4, w - 8, h - 8);
 
           const bracketLen = 16;
-          ctx.strokeStyle = isNightMode
-            ? `rgba(255, 118, 92, ${frameAlpha.toFixed(3)})`
-            : `rgba(255, 241, 242, ${frameAlpha.toFixed(3)})`;
+          ctx.strokeStyle = `rgba(${c.flareBrightRgb}, ${frameAlpha.toFixed(3)})`;
           ctx.lineWidth = 2.4;
           ctx.beginPath();
           // Top-left
@@ -593,11 +560,9 @@ export const RadarCompassHud: React.FC<RadarCompassHudProps> = ({
             const outerR = maxR + spikeReach;
             const spikeAlpha = staticFade * (0.45 + 0.55 * hash) * nightScale;
             ctx.strokeStyle =
-              hash > 0.72 && !isNightMode
-                ? `rgba(255, 241, 242, ${Math.min(1, spikeAlpha).toFixed(3)})`
-                : isNightMode
-                ? `rgba(255, 92, 88, ${Math.min(1, spikeAlpha).toFixed(3)})`
-                : `rgba(251, 113, 133, ${Math.min(1, spikeAlpha).toFixed(3)})`;
+              hash > 0.72 && !isNight
+                ? `rgba(${c.flareBrightRgb}, ${Math.min(1, spikeAlpha).toFixed(3)})`
+                : `rgba(${c.flarePrimaryRgb}, ${Math.min(1, spikeAlpha).toFixed(3)})`;
             ctx.lineWidth = hash > 0.78 ? 2.1 : 1.25;
             ctx.beginPath();
             ctx.moveTo(cx + Math.cos(rad) * innerR, cy + Math.sin(rad) * innerR);
@@ -621,14 +586,12 @@ export const RadarCompassHud: React.FC<RadarCompassHudProps> = ({
           const sAlpha = Math.max(0, (1 - Math.pow(sNorm, 1.4)) * 0.96 * sweep.weight) * nightScale;
 
           ctx.save();
-          ctx.shadowColor = isNightMode ? '#FF3B30' : '#FB7185';
-          ctx.shadowBlur = isNightMode ? 8 : 14;
+          ctx.shadowColor = `rgb(${c.flarePrimaryRgb})`;
+          ctx.shadowBlur = isNight ? 8 : 14;
           ctx.strokeStyle =
-            idx === 0 && !isNightMode
-              ? `rgba(255, 228, 230, ${Math.min(1, sAlpha).toFixed(3)})`
-              : isNightMode
-              ? `rgba(255, 76, 68, ${Math.min(1, sAlpha).toFixed(3)})`
-              : `rgba(251, 113, 133, ${Math.min(1, sAlpha).toFixed(3)})`;
+            idx === 0 && !isNight
+              ? `rgba(${c.flareBrightRgb}, ${Math.min(1, sAlpha).toFixed(3)})`
+              : `rgba(${c.flarePrimaryRgb}, ${Math.min(1, sAlpha).toFixed(3)})`;
           ctx.lineWidth = idx === 0 ? 2.5 : 1.5;
           if (sweep.dashed) {
             ctx.setLineDash([7, 4]);
@@ -643,9 +606,7 @@ export const RadarCompassHud: React.FC<RadarCompassHudProps> = ({
         const crossAlpha = Math.max(0, 1 - flareNorm * 1.4) * 0.95 * nightScale;
         if (crossAlpha > 0.02) {
           ctx.save();
-          ctx.strokeStyle = isNightMode
-            ? `rgba(255, 118, 92, ${crossAlpha.toFixed(3)})`
-            : `rgba(255, 241, 242, ${crossAlpha.toFixed(3)})`;
+          ctx.strokeStyle = `rgba(${c.flareBrightRgb}, ${crossAlpha.toFixed(3)})`;
           ctx.lineWidth = 1.8;
           ctx.beginPath();
           ctx.moveTo(cx - 22, cy);
@@ -663,12 +624,8 @@ export const RadarCompassHud: React.FC<RadarCompassHudProps> = ({
 
       // Center listener head marker
       ctx.fillStyle = isSolarFlareBurstActive
-        ? isNightMode
-          ? '#FF3B30'
-          : '#FFF1F2'
-        : isNightMode
-        ? '#FF5C58'
-        : '#F1F5F9';
+        ? `rgb(${c.flareBrightRgb})`
+        : c.textPrimary;
       ctx.fillRect(cx - 4, cy - 4, 8, 8);
 
       if (!prefersReducedMotion) {
@@ -702,6 +659,7 @@ export const RadarCompassHud: React.FC<RadarCompassHudProps> = ({
     windTelemetry,
     atmosphericFlowEnabled,
     nightMode,
+    theme,
     magneticSnap,
     auroralPulse,
     solarFlare,

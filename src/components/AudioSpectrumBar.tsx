@@ -1,10 +1,12 @@
 import React, { useEffect, useRef } from 'react';
+import { BeaThemePalette, resolveTheme } from '../theme/themes';
 
 interface AudioSpectrumBarProps {
   analyser: AnalyserNode | null;
   isPlaying: boolean;
   isTestingSpatial: boolean;
   nightMode?: boolean;
+  theme?: BeaThemePalette;
 }
 
 export const AudioSpectrumBar: React.FC<AudioSpectrumBarProps> = ({
@@ -12,6 +14,7 @@ export const AudioSpectrumBar: React.FC<AudioSpectrumBarProps> = ({
   isPlaying,
   isTestingSpatial,
   nightMode = false,
+  theme,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -20,6 +23,10 @@ export const AudioSpectrumBar: React.FC<AudioSpectrumBarProps> = ({
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+
+    const pal = resolveTheme(theme, nightMode);
+    const c = pal.canvas;
+    const isNight = pal.isNightFilter;
 
     let rafId = 0;
     const active = isPlaying || isTestingSpatial;
@@ -30,11 +37,11 @@ export const AudioSpectrumBar: React.FC<AudioSpectrumBarProps> = ({
     const draw = () => {
       const w = canvas.width;
       const h = canvas.height;
-      ctx.fillStyle = nightMode ? '#070102' : '#060B14';
+      ctx.fillStyle = c.bg;
       ctx.fillRect(0, 0, w, h);
 
       // Center zero-crossing reference hairline
-      ctx.strokeStyle = nightMode ? 'rgba(77, 17, 25, 0.85)' : 'rgba(26, 46, 68, 0.85)';
+      ctx.strokeStyle = c.axisLine;
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(0, h / 2);
@@ -45,10 +52,10 @@ export const AudioSpectrumBar: React.FC<AudioSpectrumBarProps> = ({
         analyser.getByteFrequencyData(freqData);
         analyser.getByteTimeDomainData(timeData);
 
-        // 32-band harmonic spectrum bars (bloom attenuated in Night Mode)
+        // 32-band harmonic spectrum bars
         const bars = 32;
         const barW = w / bars;
-        ctx.fillStyle = nightMode ? 'rgba(255, 59, 48, 0.12)' : 'rgba(94, 234, 212, 0.22)';
+        ctx.fillStyle = `rgba(${c.primaryRgb}, ${isNight ? '0.14' : '0.22'})`;
         for (let i = 0; i < bars; i++) {
           const val = freqData[i * 2] / 255;
           const barH = Math.max(1, val * (h - 6));
@@ -56,14 +63,8 @@ export const AudioSpectrumBar: React.FC<AudioSpectrumBarProps> = ({
         }
 
         // Live oscilloscope time-domain trace
-        ctx.strokeStyle = nightMode
-          ? isTestingSpatial
-            ? '#FF6B4A'
-            : '#FF3B30'
-          : isTestingSpatial
-          ? '#FB7185'
-          : '#5EEAD4';
-        ctx.lineWidth = nightMode ? 1.25 : 1.5;
+        ctx.strokeStyle = isTestingSpatial ? c.secondary : c.primary;
+        ctx.lineWidth = isNight ? 1.25 : 1.5;
         ctx.beginPath();
         const sliceW = w / bufferLen;
         for (let i = 0; i < bufferLen; i++) {
@@ -75,7 +76,7 @@ export const AudioSpectrumBar: React.FC<AudioSpectrumBarProps> = ({
         ctx.stroke();
       } else {
         // Standby flat trace
-        ctx.strokeStyle = nightMode ? 'rgba(217, 72, 72, 0.4)' : 'rgba(148, 163, 184, 0.35)';
+        ctx.strokeStyle = c.gridLine;
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(0, h / 2);
@@ -92,7 +93,7 @@ export const AudioSpectrumBar: React.FC<AudioSpectrumBarProps> = ({
     return () => {
       if (rafId) window.cancelAnimationFrame(rafId);
     };
-  }, [analyser, isPlaying, isTestingSpatial, nightMode]);
+  }, [analyser, isPlaying, isTestingSpatial, nightMode, theme]);
 
   return (
     <div className="border border-[var(--border-strong)] bg-[var(--bg-console)] p-2.5">

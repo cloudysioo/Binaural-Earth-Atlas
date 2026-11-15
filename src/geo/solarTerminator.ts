@@ -1,4 +1,5 @@
 import * as d3 from 'd3';
+import { BeaThemePalette, resolveTheme } from '../theme/themes';
 
 export interface SolarPosition {
   utcMs: number;
@@ -234,8 +235,12 @@ export function renderSolarTerminatorPlate(
   fy: number,
   fw: number,
   fh: number,
-  nightMode = false
+  nightMode = false,
+  theme?: BeaThemePalette
 ): void {
+  const pal = resolveTheme(theme, nightMode);
+  const c = pal.canvas;
+  const isNight = pal.isNightFilter;
   const projection = d3
     .geoEquirectangular()
     .fitExtent([[fx, fy], [fx + fw, fy + fh]], { type: 'Sphere' });
@@ -282,7 +287,7 @@ export function renderSolarTerminatorPlate(
 
   // Subtle -6° civil twilight boundary
   ctx.setLineDash([4, 4]);
-  ctx.strokeStyle = nightMode ? 'rgba(185, 28, 28, 0.48)' : 'rgba(148, 163, 184, 0.45)';
+  ctx.strokeStyle = c.terminatorTwilight;
   ctx.lineWidth = 1;
   ctx.beginPath();
   pathGen(civilShadow);
@@ -290,21 +295,21 @@ export function renderSolarTerminatorPlate(
   ctx.setLineDash([]);
 
   // Primary 0° Solar Terminator line (bloom halo suppressed in Night Mode)
-  if (!nightMode) {
-    ctx.strokeStyle = 'rgba(245, 158, 11, 0.30)';
+  if (!isNight) {
+    ctx.strokeStyle = c.terminatorHalo;
     ctx.lineWidth = 4.5;
     ctx.beginPath();
     pathGen(nightHemisphere);
     ctx.stroke();
   }
 
-  ctx.strokeStyle = nightMode ? '#E04826' : '#F59E0B';
-  ctx.lineWidth = nightMode ? 1.35 : 1.75;
+  ctx.strokeStyle = c.terminatorLine;
+  ctx.lineWidth = isNight ? 1.35 : 1.75;
   ctx.beginPath();
   pathGen(nightHemisphere);
   ctx.stroke();
 
-  const badgeBg = nightMode ? 'rgba(7, 1, 2, 0.90)' : 'rgba(6, 11, 20, 0.85)';
+  const badgeBg = c.terminatorBadgeBg;
   const sunPt = projection([solar.subsolarLonDeg, solar.subsolarLatDeg]);
   if (sunPt) {
     drawSubsolarBadge(
@@ -312,7 +317,7 @@ export function renderSolarTerminatorPlate(
       sunPt[0],
       sunPt[1],
       `SUN ${formatCoordLat(solar.subsolarLatDeg)} ${formatCoordLon(solar.subsolarLonDeg)}`,
-      nightMode ? '#E04826' : '#F59E0B',
+      c.terminatorLine,
       true,
       badgeBg
     );
@@ -325,7 +330,7 @@ export function renderSolarTerminatorPlate(
       antiPt[0],
       antiPt[1],
       'MIDNIGHT NADIR',
-      nightMode ? '#B91C1C' : '#94A3B8',
+      c.textMuted,
       false,
       badgeBg
     );
@@ -346,8 +351,12 @@ export function renderSolarTerminatorOrthographic(
   cx: number,
   cy: number,
   radiusPx: number,
-  nightMode = false
+  nightMode = false,
+  theme?: BeaThemePalette
 ): void {
+  const pal = resolveTheme(theme, nightMode);
+  const c = pal.canvas;
+  const isNight = pal.isNightFilter;
   const projection = d3
     .geoOrthographic()
     .rotate([-centerLonDeg, -centerLatDeg])
@@ -376,7 +385,7 @@ export function renderSolarTerminatorOrthographic(
 
   // Civil twilight (-6°) contour
   ctx.setLineDash([4, 4]);
-  ctx.strokeStyle = nightMode ? 'rgba(185, 28, 28, 0.48)' : 'rgba(148, 163, 184, 0.45)';
+  ctx.strokeStyle = c.terminatorTwilight;
   ctx.lineWidth = 1;
   ctx.beginPath();
   pathGen(civilTwilightLine);
@@ -384,16 +393,16 @@ export function renderSolarTerminatorOrthographic(
   ctx.setLineDash([]);
 
   // Primary 0° Solar Terminator line (bloom halo suppressed in Night Mode)
-  if (!nightMode) {
-    ctx.strokeStyle = 'rgba(245, 158, 11, 0.34)';
+  if (!isNight) {
+    ctx.strokeStyle = c.terminatorHalo;
     ctx.lineWidth = 4.5;
     ctx.beginPath();
     pathGen(terminatorLine);
     ctx.stroke();
   }
 
-  ctx.strokeStyle = nightMode ? '#E04826' : '#F59E0B';
-  ctx.lineWidth = nightMode ? 1.4 : 1.85;
+  ctx.strokeStyle = c.terminatorLine;
+  ctx.lineWidth = isNight ? 1.4 : 1.85;
   ctx.beginPath();
   pathGen(terminatorLine);
   ctx.stroke();
@@ -401,7 +410,7 @@ export function renderSolarTerminatorOrthographic(
   // Subsolar & antisolar markers only if facing visible hemisphere (>0° angular distance from limb)
   const phi0 = centerLatDeg * DEG_TO_RAD;
   const lam0 = centerLonDeg * DEG_TO_RAD;
-  const badgeBg = nightMode ? 'rgba(7, 1, 2, 0.90)' : 'rgba(6, 11, 20, 0.85)';
+  const badgeBg = c.terminatorBadgeBg;
 
   const sunCos =
     Math.sin(phi0) * solar.sinDecl +
@@ -414,7 +423,7 @@ export function renderSolarTerminatorOrthographic(
         sunPt[0],
         sunPt[1],
         `SUN ${formatCoordLat(solar.subsolarLatDeg)} ${formatCoordLon(solar.subsolarLonDeg)}`,
-        nightMode ? '#E04826' : '#F59E0B',
+        c.terminatorLine,
         true,
         badgeBg
       );
@@ -434,7 +443,7 @@ export function renderSolarTerminatorOrthographic(
         antiPt[0],
         antiPt[1],
         'MIDNIGHT NADIR',
-        nightMode ? '#B91C1C' : '#94A3B8',
+        c.textMuted,
         false,
         badgeBg
       );
