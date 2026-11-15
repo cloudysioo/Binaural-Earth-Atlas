@@ -14,6 +14,18 @@
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
 }
 
+html.observatory-night {
+  --bg-obsidian: #070102;
+  --bg-console: #100305;
+  --bg-panel: #1A060A;
+  --border-grid: #4D1119;
+  --accent-mint: #FF3B30;
+  --accent-coral: #FF6B4A;
+  --accent-amber: #E04826;
+  --text-primary: #FF5C58;
+  --text-muted: #D94848;
+}
+
 *,
 *::before,
 *::after {

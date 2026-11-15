@@ -4,12 +4,14 @@ interface AudioSpectrumBarProps {
   analyser: AnalyserNode | null;
   isPlaying: boolean;
   isTestingSpatial: boolean;
+  nightMode?: boolean;
 }
 
 export const AudioSpectrumBar: React.FC<AudioSpectrumBarProps> = ({
   analyser,
   isPlaying,
   isTestingSpatial,
+  nightMode = false,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -28,11 +30,11 @@ export const AudioSpectrumBar: React.FC<AudioSpectrumBarProps> = ({
     const draw = () => {
       const w = canvas.width;
       const h = canvas.height;
-      ctx.fillStyle = '#060B14';
+      ctx.fillStyle = nightMode ? '#070102' : '#060B14';
       ctx.fillRect(0, 0, w, h);
 
       // Center zero-crossing reference hairline
-      ctx.strokeStyle = 'rgba(26, 46, 68, 0.85)';
+      ctx.strokeStyle = nightMode ? 'rgba(77, 17, 25, 0.85)' : 'rgba(26, 46, 68, 0.85)';
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(0, h / 2);
@@ -43,10 +45,10 @@ export const AudioSpectrumBar: React.FC<AudioSpectrumBarProps> = ({
         analyser.getByteFrequencyData(freqData);
         analyser.getByteTimeDomainData(timeData);
 
-        // 32-band harmonic spectrum bars (subtle backdrop)
+        // 32-band harmonic spectrum bars (bloom attenuated in Night Mode)
         const bars = 32;
         const barW = w / bars;
-        ctx.fillStyle = 'rgba(94, 234, 212, 0.22)';
+        ctx.fillStyle = nightMode ? 'rgba(255, 59, 48, 0.12)' : 'rgba(94, 234, 212, 0.22)';
         for (let i = 0; i < bars; i++) {
           const val = freqData[i * 2] / 255;
           const barH = Math.max(1, val * (h - 6));
@@ -54,8 +56,14 @@ export const AudioSpectrumBar: React.FC<AudioSpectrumBarProps> = ({
         }
 
         // Live oscilloscope time-domain trace
-        ctx.strokeStyle = isTestingSpatial ? '#FB7185' : '#5EEAD4';
-        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = nightMode
+          ? isTestingSpatial
+            ? '#FF6B4A'
+            : '#FF3B30'
+          : isTestingSpatial
+          ? '#FB7185'
+          : '#5EEAD4';
+        ctx.lineWidth = nightMode ? 1.25 : 1.5;
         ctx.beginPath();
         const sliceW = w / bufferLen;
         for (let i = 0; i < bufferLen; i++) {
@@ -67,7 +75,7 @@ export const AudioSpectrumBar: React.FC<AudioSpectrumBarProps> = ({
         ctx.stroke();
       } else {
         // Standby flat trace
-        ctx.strokeStyle = 'rgba(148, 163, 184, 0.35)';
+        ctx.strokeStyle = nightMode ? 'rgba(217, 72, 72, 0.4)' : 'rgba(148, 163, 184, 0.35)';
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(0, h / 2);
@@ -84,13 +92,19 @@ export const AudioSpectrumBar: React.FC<AudioSpectrumBarProps> = ({
     return () => {
       if (rafId) window.cancelAnimationFrame(rafId);
     };
-  }, [analyser, isPlaying, isTestingSpatial]);
+  }, [analyser, isPlaying, isTestingSpatial, nightMode]);
 
   return (
-    <div className="border border-[#1A2E44] bg-[#060B14] p-2">
-      <div className="flex items-center justify-between text-[11px] font-mono-tabular text-[#94A3B8] mb-1">
+    <div className="border border-[var(--border-grid)] bg-[var(--bg-obsidian)] p-2">
+      <div className="flex items-center justify-between text-[11px] font-mono-tabular text-[var(--text-muted)] mb-1">
         <span>LIVE BINAURAL OUTPUT OSCILLOSCOPE</span>
-        <span className={isPlaying || isTestingSpatial ? 'text-[#5EEAD4]' : 'text-[#94A3B8]'}>
+        <span
+          className={
+            isPlaying || isTestingSpatial
+              ? 'text-[var(--accent-mint)]'
+              : 'text-[var(--text-muted)]'
+          }
+        >
           {isTestingSpatial ? 'CALIBRATION SIGNAL' : isPlaying ? 'HRTF STREAM' : 'SILENT'}
         </span>
       </div>
@@ -98,7 +112,7 @@ export const AudioSpectrumBar: React.FC<AudioSpectrumBarProps> = ({
         ref={canvasRef}
         width={420}
         height={58}
-        className="w-full h-[58px] block border border-[#1A2E44]"
+        className="w-full h-[58px] block border border-[var(--border-grid)]"
         aria-label="Live binaural audio output waveform and harmonic spectrum"
       />
     </div>

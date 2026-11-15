@@ -25,12 +25,14 @@ interface TemporalTrendsChartProps {
   history: TelemetryPoint[];
   archiveYear: number;
   maxMonths: number;
+  nightMode?: boolean;
 }
 
 export const TemporalTrendsChart: React.FC<TemporalTrendsChartProps> = ({
   history,
   archiveYear,
   maxMonths,
+  nightMode = false,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const chartRef = useRef<Chart<'line'> | null>(null);
@@ -130,26 +132,52 @@ export const TemporalTrendsChart: React.FC<TemporalTrendsChartProps> = ({
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
+
+    const primaryTrace = nightMode ? '#FF3B30' : '#5EEAD4';
+    const secondaryTrace = nightMode ? '#B91C1C' : '#FB7185';
+    const textPrimary = nightMode ? '#FF5C58' : '#F1F5F9';
+    const textMuted = nightMode ? '#D94848' : '#94A3B8';
+    const gridColor = nightMode ? 'rgba(77, 17, 25, 0.6)' : 'rgba(26, 46, 68, 0.55)';
+
     chart.data.labels = history.map((pt) => pt.label);
     chart.data.datasets[0].data = history.map((pt) => Number(pt.intensity.toFixed(3)));
+    chart.data.datasets[0].borderColor = primaryTrace;
+    chart.data.datasets[0].backgroundColor = primaryTrace;
     chart.data.datasets[1].data = history.map((pt) => Number(pt.anomaly.toFixed(3)));
+    chart.data.datasets[1].borderColor = secondaryTrace;
+    chart.data.datasets[1].backgroundColor = secondaryTrace;
+
+    if (chart.options.plugins?.legend?.labels) {
+      chart.options.plugins.legend.labels.color = textPrimary;
+    }
+    if (chart.options.plugins?.tooltip) {
+      chart.options.plugins.tooltip.backgroundColor = nightMode ? '#070102' : '#060B14';
+      chart.options.plugins.tooltip.borderColor = nightMode ? '#4D1119' : '#1A2E44';
+      chart.options.plugins.tooltip.titleColor = textPrimary;
+      chart.options.plugins.tooltip.bodyColor = textPrimary;
+    }
+    if (chart.options.scales?.x?.ticks) chart.options.scales.x.ticks.color = textMuted;
+    if (chart.options.scales?.x?.grid) chart.options.scales.x.grid.color = gridColor;
+    if (chart.options.scales?.y?.ticks) chart.options.scales.y.ticks.color = textMuted;
+    if (chart.options.scales?.y?.grid) chart.options.scales.y.grid.color = gridColor;
+
     chart.update('none');
-  }, [history]);
+  }, [history, nightMode]);
 
   return (
     <section
       aria-label={`${archiveYear} Temporal Trends Chart`}
-      className="border border-[#1A2E44] bg-[#0B1320] flex flex-col"
+      className="border border-[var(--border-grid)] bg-[var(--bg-console)] flex flex-col"
     >
-      <div className="flex items-center justify-between px-3 py-2 border-b border-[#1A2E44] bg-[#111D30]">
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-[#F1F5F9]">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--border-grid)] bg-[var(--bg-panel)]">
+        <h2 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-primary)]">
           {archiveYear} Temporal Trajectory
         </h2>
-        <span className="text-[11px] font-mono-tabular text-[#5EEAD4]">
+        <span className="text-[11px] font-mono-tabular text-[var(--accent-mint)]">
           {history.length} / {maxMonths} MONTHS
         </span>
       </div>
-      <div className="p-3 bg-[#060B14] h-[168px] w-full">
+      <div className="p-3 bg-[var(--bg-obsidian)] h-[168px] w-full">
         <canvas ref={canvasRef} aria-label={`${archiveYear} Temporal Trends Chart`} />
       </div>
     </section>

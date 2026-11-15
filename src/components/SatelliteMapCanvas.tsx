@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Globe, Map as MapIcon, Thermometer } from 'lucide-react';
+import { Globe, Map as MapIcon, Sun, Thermometer } from 'lucide-react';
 import {
   ANOMALY_MAX_C,
   ANOMALY_MIN_C,
@@ -10,6 +10,17 @@ import {
   sampleDeltaAt,
 } from '../analysis/climateAnomalyHeatmap';
 import { ANALYSIS_HEIGHT, ANALYSIS_WIDTH } from '../analysis/pixelScanner';
+import { sampleWindAtCoord, WindVectorField } from '../analysis/windVectorField';
+import {
+  computeSolarPosition,
+  formatCoordLat,
+  formatCoordLon,
+  renderSolarTerminatorOrthographic,
+  renderSolarTerminatorPlate,
+  sampleSolarAt,
+  shadePixelBySolarCosZ,
+  SolarRegime,
+} from '../geo/solarTerminator';
 import {
   COASTLINE_LINES_RAD,
   COUNTRY_BORDERS_RAD,
@@ -46,8 +57,13 @@ interface SatelliteMapCanvasProps {
   isLoading: boolean;
   projection: ProjectionMode;
   showAnomalyHeatmap: boolean;
+  showSolarTerminator: boolean;
+  utcTimestampMs: number;
+  windField?: WindVectorField | null;
+  nightMode?: boolean;
   onToggleProjection: (mode: ProjectionMode) => void;
   onToggleAnomalyHeatmap: () => void;
+  onToggleSolarTerminator: () => void;
   onSelectBookmark: (layerKey: LayerKey, label: string) => void;
 }
 
@@ -129,8 +145,13 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
   isLoading,
   projection,
   showAnomalyHeatmap,
+  showSolarTerminator,
+  utcTimestampMs,
+  windField = null,
+  nightMode = false,
   onToggleProjection,
   onToggleAnomalyHeatmap,
+  onToggleSolarTerminator,
   onSelectBookmark,
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -149,6 +170,11 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
     lumPct: number;
     anomalyPct: number;
     deltaC: number;
+    solarElevDeg: number;
+    solarRegime: SolarRegime;
+    windSpeedMs: number | null;
+    windBearingDeg: number | null;
+    windOcean: boolean;
     cursorX: number;
     cursorY: number;
     isDragging: boolean;
@@ -156,16 +182,22 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
 
   const legendStops = useMemo(() => getAnomalyLegendStops(), []);
 
+  const solarPosition = useMemo(() => computeSolarPosition(utcTimestampMs), [utcTimestampMs]);
+
   const anomalyField = useMemo(() => {
     if (!sstCanvas && !sourceCanvas) return null;
     return buildClimateAnomalyField(sstCanvas, sourceCanvas, dateString, archiveYear);
   }, [sstCanvas, sourceCanvas, dateString, archiveYear, frameRevision]);
 
-  const layerLumStats = useMemo(() => {
-    if (!sourceCanvas) return { mean: 40, sigma: 25 };
+  const sourcePixels = useMemo(() => {
+    if (!sourceCanvas) return null;
     const ctx = sourceCanvas.getContext('2d', { willReadFrequently: true });
-    if (!ctx) return { mean: 40, sigma: 25 };
-    const { data } = ctx.getImageData(0, 0, ANALYSIS_WIDTH, ANALYSIS_HEIGHT);
+    if (!ctx) return null;
+    return ctx.getImageData(0, 0, ANALYSIS_WIDTH, ANALYSIS_HEIGHT).data;
+  }, [sourceCanvas, frameRevision]);
+
+  const layerLumStats = useMemo(() => {
+    if (!sourcePixels) return { mean: 40, sigma: 25 };
     const step = 8;
     let sum = 0;
     let sumSq = 0;
@@ -173,7 +205,7 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
     for (let y = 0; y < ANALYSIS_HEIGHT; y += step) {
       for (let x = 0; x < ANALYSIS_WIDTH; x += step) {
         const idx = (y * ANALYSIS_WIDTH + x) * 4;
-        const lum = 0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
+        const lum = 0.299 * sourcePixels[idx] + 0.587 * sourcePixels[idx + 1] + 0.114 * sourcePixels[idx + 2];
         sum += lum;
         sumSq += lum * lum;
         count++;
@@ -182,7 +214,7 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
     const mean = count > 0 ? sum / count : 40;
     const variance = count > 0 ? Math.max(0, sumSq / count - mean * mean) : 625;
     return { mean, sigma: Math.sqrt(variance) };
-  }, [sourceCanvas, frameRevision]);
+  }, [sourcePixels]);
 
   const [globeCenter, setGlobeCenter] = useState<{ lat: number; lon: number }>({
     lat: 45,
@@ -247,7 +279,7 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
     const ctx = target.getContext('2d');
     if (!ctx) return;
 
-    ctx.fillStyle = '#060B14';
+    ctx.fillStyle = nightMode ? '#070102' : '#060B14';
     ctx.fillRect(0, 0, cw, ch);
 
     const srcW = sourceCanvas?.width ?? ANALYSIS_WIDTH;
@@ -262,7 +294,35 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
     }
 
     if (showAnomalyHeatmap && anomalyField) {
-      renderD3HeatmapOverlayPlate(ctx, anomalyField, fitted.x, fitted.y, fitted.w, fitted.h, 0.78);
+      renderD3HeatmapOverlayPlate(
+        ctx,
+        anomalyField,
+        fitted.x,
+        fitted.y,
+        fitted.w,
+        fitted.h,
+        nightMode ? 0.46 : 0.78
+      );
+    }
+
+    if (nightMode) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'multiply';
+      ctx.fillStyle = '#D92626';
+      ctx.fillRect(fitted.x, fitted.y, fitted.w, fitted.h);
+      ctx.restore();
+    }
+
+    if (showSolarTerminator) {
+      renderSolarTerminatorPlate(
+        ctx,
+        solarPosition,
+        fitted.x,
+        fitted.y,
+        fitted.w,
+        fitted.h,
+        nightMode
+      );
     }
 
     // Crisp Natural Earth 50m political borders & coastlines over Plate Carrée map
@@ -273,8 +333,8 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
       fitted.y,
       fitted.w,
       fitted.h,
-      'rgba(94, 234, 212, 0.28)',
-      0.75
+      nightMode ? 'rgba(185, 28, 28, 0.30)' : 'rgba(94, 234, 212, 0.28)',
+      nightMode ? 0.65 : 0.75
     );
     strokePackedLinesPlate(
       ctx,
@@ -283,13 +343,13 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
       fitted.y,
       fitted.w,
       fitted.h,
-      'rgba(241, 245, 249, 0.62)',
-      1.0
+      nightMode ? 'rgba(239, 68, 68, 0.52)' : 'rgba(241, 245, 249, 0.62)',
+      nightMode ? 0.9 : 1.0
     );
 
     // Geodetic graticules & reticle mapped directly to the fitted Plate Carrée bounds
     ctx.save();
-    ctx.strokeStyle = 'rgba(94, 234, 212, 0.18)';
+    ctx.strokeStyle = nightMode ? 'rgba(185, 28, 28, 0.20)' : 'rgba(94, 234, 212, 0.18)';
     ctx.lineWidth = 1;
 
     for (let lon = -150; lon <= 150; lon += 30) {
@@ -309,7 +369,7 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
     }
 
     // Equator & Prime Meridian
-    ctx.strokeStyle = 'rgba(94, 234, 212, 0.36)';
+    ctx.strokeStyle = nightMode ? 'rgba(220, 38, 38, 0.34)' : 'rgba(94, 234, 212, 0.36)';
     ctx.beginPath();
     ctx.moveTo(fitted.x, fitted.y + fitted.h / 2);
     ctx.lineTo(fitted.x + fitted.w, fitted.y + fitted.h / 2);
@@ -317,11 +377,11 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
     ctx.lineTo(fitted.x + fitted.w / 2, fitted.y + fitted.h);
     ctx.stroke();
 
-    // High-contrast Mint bounding reticle
+    // High-contrast bounding reticle
     const pad = 12;
     const arm = Math.min(22, Math.floor(Math.min(fitted.w, fitted.h) * 0.08));
-    ctx.strokeStyle = '#5EEAD4';
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = nightMode ? '#DC2626' : '#5EEAD4';
+    ctx.lineWidth = nightMode ? 1.5 : 2;
     ctx.beginPath();
     ctx.moveTo(fitted.x + pad, fitted.y + pad + arm);
     ctx.lineTo(fitted.x + pad, fitted.y + pad);
@@ -340,7 +400,7 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
     ctx.lineTo(fitted.x + fitted.w - pad, fitted.y + fitted.h - pad - arm);
     ctx.stroke();
 
-    ctx.fillStyle = 'rgba(241, 245, 249, 0.8)';
+    ctx.fillStyle = nightMode ? 'rgba(255, 92, 88, 0.78)' : 'rgba(241, 245, 249, 0.8)';
     ctx.font = '11px "JetBrains Mono", monospace';
     ctx.fillText('90°N', fitted.x + 18, fitted.y + 26);
     ctx.fillText('00° EQ', fitted.x + 18, fitted.y + fitted.h / 2 - 6);
@@ -355,13 +415,16 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
     containerSize,
     showAnomalyHeatmap,
     anomalyField,
+    showSolarTerminator,
+    solarPosition,
+    nightMode,
   ]);
 
   // Render Anti-Aliased Orthographic 3D Globe fitted cleanly to container dimensions
   useEffect(() => {
     if (projection !== 'globe') return;
     const canvas = globeCanvasRef.current;
-    if (!canvas || !sourceCanvas) return;
+    if (!canvas || !sourcePixels) return;
 
     const w = containerSize.width;
     const h = containerSize.height;
@@ -371,14 +434,13 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
     }
 
     const ctx = canvas.getContext('2d');
-    const srcCtx = sourceCanvas.getContext('2d', { willReadFrequently: true });
-    if (!ctx || !srcCtx) return;
+    if (!ctx) return;
 
     const cx = w / 2;
     const cy = h / 2;
     const R = Math.min(w, h) * 0.43;
 
-    const srcData = srcCtx.getImageData(0, 0, ANALYSIS_WIDTH, ANALYSIS_HEIGHT).data;
+    const srcData = sourcePixels;
     const outImg = ctx.createImageData(w, h);
     const out = outImg.data;
 
@@ -387,10 +449,14 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
     const sinPhi0 = Math.sin(phi0);
     const cosPhi0 = Math.cos(phi0);
 
+    const bgR = nightMode ? 7 : 6;
+    const bgG = nightMode ? 1 : 11;
+    const bgB = nightMode ? 2 : 20;
+
     for (let i = 0; i < out.length; i += 4) {
-      out[i] = 6;
-      out[i + 1] = 11;
-      out[i + 2] = 20;
+      out[i] = bgR;
+      out[i + 1] = bgG;
+      out[i + 2] = bgB;
       out[i + 3] = 255;
     }
 
@@ -441,10 +507,27 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
 
         if (showAnomalyHeatmap && anomalyField) {
           const hData = anomalyField.heatmapData;
-          const hAlpha = (hData[sIdx + 3] / 255) * 0.78;
+          const hAlpha = (hData[sIdx + 3] / 255) * (nightMode ? 0.46 : 0.78);
           baseR = baseR * (1 - hAlpha) + hData[sIdx] * hAlpha;
           baseG = baseG * (1 - hAlpha) + hData[sIdx + 1] * hAlpha;
           baseB = baseB * (1 - hAlpha) + hData[sIdx + 2] * hAlpha;
+        }
+
+        if (nightMode) {
+          // Dark-adapted crimson optical filter attenuates high-luminance green/blue channels
+          const lum = 0.299 * baseR + 0.587 * baseG + 0.114 * baseB;
+          baseR = Math.min(255, lum * 0.8 + baseR * 0.14);
+          baseG = baseG * 0.12;
+          baseB = baseB * 0.08;
+        }
+
+        if (showSolarTerminator) {
+          const cosZ =
+            Math.sin(latRad) * solarPosition.sinDecl +
+            Math.cos(latRad) *
+              solarPosition.cosDecl *
+              Math.cos(lonRad - solarPosition.subsolarLonRad);
+          [baseR, baseG, baseB] = shadePixelBySolarCosZ(baseR, baseG, baseB, cosZ, nightMode);
         }
 
         const limbShade = 0.65 + 0.35 * cosC;
@@ -452,16 +535,16 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
         const g = baseG * limbShade;
         const b = baseB * limbShade;
 
-        out[dIdx] = Math.round(6 + (r - 6) * edgeAlpha);
-        out[dIdx + 1] = Math.round(11 + (g - 11) * edgeAlpha);
-        out[dIdx + 2] = Math.round(20 + (b - 20) * edgeAlpha);
+        out[dIdx] = Math.round(bgR + (r - bgR) * edgeAlpha);
+        out[dIdx + 1] = Math.round(bgG + (g - bgG) * edgeAlpha);
+        out[dIdx + 2] = Math.round(bgB + (b - bgB) * edgeAlpha);
         out[dIdx + 3] = 255;
       }
     }
 
     ctx.putImageData(outImg, 0, 0);
 
-    if (showAnomalyHeatmap && anomalyField) {
+    if (showAnomalyHeatmap && anomalyField && !nightMode) {
       renderD3HeatmapContoursOrthographic(
         ctx,
         anomalyField,
@@ -482,8 +565,8 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
       cx,
       cy,
       R,
-      'rgba(94, 234, 212, 0.34)',
-      0.85
+      nightMode ? 'rgba(185, 28, 28, 0.32)' : 'rgba(94, 234, 212, 0.34)',
+      nightMode ? 0.7 : 0.85
     );
     strokePackedLinesOrthographic(
       ctx,
@@ -493,15 +576,20 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
       cx,
       cy,
       R,
-      'rgba(241, 245, 249, 0.72)',
-      1.15
+      nightMode ? 'rgba(239, 68, 68, 0.56)' : 'rgba(241, 245, 249, 0.72)',
+      nightMode ? 1.0 : 1.15
     );
 
     ctx.save();
     ctx.lineWidth = 1;
     for (let latDeg = -60; latDeg <= 60; latDeg += 30) {
-      ctx.strokeStyle =
-        latDeg === 0 ? 'rgba(94, 234, 212, 0.35)' : 'rgba(94, 234, 212, 0.14)';
+      ctx.strokeStyle = nightMode
+        ? latDeg === 0
+          ? 'rgba(220, 38, 38, 0.35)'
+          : 'rgba(185, 28, 28, 0.16)'
+        : latDeg === 0
+        ? 'rgba(94, 234, 212, 0.35)'
+        : 'rgba(94, 234, 212, 0.14)';
       ctx.beginPath();
       let started = false;
       const latR = (latDeg * Math.PI) / 180;
@@ -522,8 +610,13 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
     }
 
     for (let lonDeg = -180; lonDeg < 180; lonDeg += 30) {
-      ctx.strokeStyle =
-        lonDeg === 0 ? 'rgba(94, 234, 212, 0.35)' : 'rgba(94, 234, 212, 0.14)';
+      ctx.strokeStyle = nightMode
+        ? lonDeg === 0
+          ? 'rgba(220, 38, 38, 0.35)'
+          : 'rgba(185, 28, 28, 0.16)'
+        : lonDeg === 0
+        ? 'rgba(94, 234, 212, 0.35)'
+        : 'rgba(94, 234, 212, 0.14)';
       ctx.beginPath();
       let started = false;
       const lonR = (lonDeg * Math.PI) / 180;
@@ -543,19 +636,19 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
       ctx.stroke();
     }
 
-    ctx.strokeStyle = '#5EEAD4';
-    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = nightMode ? '#B91C1C' : '#5EEAD4';
+    ctx.lineWidth = nightMode ? 1.15 : 1.5;
     ctx.beginPath();
     ctx.arc(cx, cy, R, 0, Math.PI * 2);
     ctx.stroke();
 
-    ctx.strokeStyle = 'rgba(94, 234, 212, 0.22)';
+    ctx.strokeStyle = nightMode ? 'rgba(185, 28, 28, 0.14)' : 'rgba(94, 234, 212, 0.22)';
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.arc(cx, cy, R + 12, 0, Math.PI * 2);
     ctx.stroke();
 
-    ctx.strokeStyle = 'rgba(94, 234, 212, 0.35)';
+    ctx.strokeStyle = nightMode ? 'rgba(220, 38, 38, 0.28)' : 'rgba(94, 234, 212, 0.35)';
     ctx.beginPath();
     ctx.moveTo(cx - R - 20, cy);
     ctx.lineTo(cx - R - 4, cy);
@@ -567,7 +660,7 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
     ctx.lineTo(cx, cy + R + 20);
     ctx.stroke();
 
-    ctx.fillStyle = 'rgba(148, 163, 184, 0.85)';
+    ctx.fillStyle = nightMode ? 'rgba(217, 72, 72, 0.85)' : 'rgba(148, 163, 184, 0.85)';
     ctx.font = '11px "JetBrains Mono", monospace';
     const cLatStr = `${Math.abs(globeCenter.lat).toFixed(0)}°${globeCenter.lat >= 0 ? 'N' : 'S'}`;
     const cLonStr = `${Math.abs(globeCenter.lon).toFixed(0)}°${globeCenter.lon >= 0 ? 'E' : 'W'}`;
@@ -585,18 +678,43 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
       );
       if (pt) {
         const isCurrent = bm.layerKey === activeLayerKey;
-        ctx.strokeStyle = isCurrent ? '#5EEAD4' : 'rgba(241, 245, 249, 0.72)';
-        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = nightMode
+          ? isCurrent
+            ? '#FF3B30'
+            : 'rgba(217, 72, 72, 0.65)'
+          : isCurrent
+          ? '#5EEAD4'
+          : 'rgba(241, 245, 249, 0.72)';
+        ctx.lineWidth = nightMode ? 1.15 : 1.5;
         ctx.strokeRect(pt[0] - 5, pt[1] - 5, 10, 10);
-        ctx.fillStyle = isCurrent ? '#5EEAD4' : '#F1F5F9';
+        ctx.fillStyle = nightMode
+          ? isCurrent
+            ? '#FF3B30'
+            : '#FF5C58'
+          : isCurrent
+          ? '#5EEAD4'
+          : '#F1F5F9';
         ctx.font = '10px "JetBrains Mono", monospace';
         ctx.fillText(bm.label, pt[0] + 8, pt[1] + 3);
       }
     }
     ctx.restore();
+
+    if (showSolarTerminator) {
+      renderSolarTerminatorOrthographic(
+        ctx,
+        solarPosition,
+        globeCenter.lat,
+        globeCenter.lon,
+        cx,
+        cy,
+        R,
+        nightMode
+      );
+    }
   }, [
     projection,
-    sourceCanvas,
+    sourcePixels,
     globeCenter,
     activeLayerKey,
     dateString,
@@ -604,27 +722,36 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
     containerSize,
     showAnomalyHeatmap,
     anomalyField,
+    showSolarTerminator,
+    solarPosition,
+    nightMode,
   ]);
 
   const samplePointTelemetry = (
     lon: number,
     lat: number
-  ): { lumPct: number; deltaC: number; anomalyPct: number } => {
+  ): {
+    lumPct: number;
+    deltaC: number;
+    anomalyPct: number;
+    solarElevDeg: number;
+    solarRegime: SolarRegime;
+    windSpeedMs: number | null;
+    windBearingDeg: number | null;
+    windOcean: boolean;
+  } => {
     let lum255 = 0;
-    if (sourceCanvas) {
-      const ctx = sourceCanvas.getContext('2d', { willReadFrequently: true });
-      if (ctx) {
-        const sx = Math.min(
-          ANALYSIS_WIDTH - 1,
-          Math.max(0, Math.floor(((lon + 180) / 360) * ANALYSIS_WIDTH))
-        );
-        const sy = Math.min(
-          ANALYSIS_HEIGHT - 1,
-          Math.max(0, Math.floor(((90 - lat) / 180) * ANALYSIS_HEIGHT))
-        );
-        const d = ctx.getImageData(sx, sy, 1, 1).data;
-        lum255 = 0.299 * d[0] + 0.587 * d[1] + 0.114 * d[2];
-      }
+    if (sourcePixels) {
+      const sx = Math.min(
+        ANALYSIS_WIDTH - 1,
+        Math.max(0, Math.floor(((lon + 180) / 360) * ANALYSIS_WIDTH))
+      );
+      const sy = Math.min(
+        ANALYSIS_HEIGHT - 1,
+        Math.max(0, Math.floor(((90 - lat) / 180) * ANALYSIS_HEIGHT))
+      );
+      const idx = (sy * ANALYSIS_WIDTH + sx) * 4;
+      lum255 = 0.299 * sourcePixels[idx] + 0.587 * sourcePixels[idx + 1] + 0.114 * sourcePixels[idx + 2];
     }
 
     const lumPct = Math.round((lum255 / 255) * 100);
@@ -639,10 +766,18 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
       ? thermalRatio
       : Math.min(1, thermalRatio * 0.65 + localZRatio * 0.35);
 
+    const solarSample = sampleSolarAt(solarPosition, lon, lat);
+    const windSample = windField ? sampleWindAtCoord(windField, lon, lat) : null;
+
     return {
       lumPct,
       deltaC,
       anomalyPct: Math.round(combinedRatio * 100),
+      solarElevDeg: solarSample.elevationDeg,
+      solarRegime: solarSample.regime,
+      windSpeedMs: windSample ? windSample.speedMs : null,
+      windBearingDeg: windSample ? windSample.bearingDeg : null,
+      windOcean: windSample ? windSample.isOcean : false,
     };
   };
 
@@ -677,6 +812,11 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
       lumPct: telemetry.lumPct,
       anomalyPct: telemetry.anomalyPct,
       deltaC: telemetry.deltaC,
+      solarElevDeg: telemetry.solarElevDeg,
+      solarRegime: telemetry.solarRegime,
+      windSpeedMs: telemetry.windSpeedMs,
+      windBearingDeg: telemetry.windBearingDeg,
+      windOcean: telemetry.windOcean,
       cursorX,
       cursorY,
       isDragging: false,
@@ -738,6 +878,11 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
         lumPct: telemetry.lumPct,
         anomalyPct: telemetry.anomalyPct,
         deltaC: telemetry.deltaC,
+        solarElevDeg: telemetry.solarElevDeg,
+        solarRegime: telemetry.solarRegime,
+        windSpeedMs: telemetry.windSpeedMs,
+        windBearingDeg: telemetry.windBearingDeg,
+        windOcean: telemetry.windOcean,
         cursorX,
         cursorY,
         isDragging: dragRef.current.active,
@@ -762,14 +907,14 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
   return (
     <section
       aria-label="Planetary Satellite Observation Viewport"
-      className="border border-[#1A2E44] bg-[#0B1320] flex flex-col"
+      className="border border-[var(--border-grid)] bg-[var(--bg-console)] flex flex-col"
     >
-      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 border-b border-[#1A2E44] bg-[#111D30]">
+      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 border-b border-[var(--border-grid)] bg-[var(--bg-panel)]">
         <div className="flex items-center gap-3 min-w-0">
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-[#F1F5F9] whitespace-nowrap">
+          <h2 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-primary)] whitespace-nowrap">
             Orbital Observation Stage
           </h2>
-          <span className="text-xs font-mono-tabular text-[#5EEAD4] truncate">
+          <span className="text-xs font-mono-tabular text-[var(--accent-mint)] truncate">
             {layer.cardinal} {layer.azimuthLabel} · {layer.phenomenon}
           </span>
         </div>
@@ -777,27 +922,47 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
         <div className="flex flex-wrap items-center gap-2 shrink-0">
           <button
             type="button"
+            onClick={onToggleSolarTerminator}
+            aria-pressed={showSolarTerminator}
+            title="Toggle real-time UTC Solar Terminators shadow overlay (Shortcut: T)"
+            className={`px-2.5 py-1 border text-xs font-mono-tabular flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
+              showSolarTerminator
+                ? 'bg-[var(--accent-amber)] border-[var(--accent-amber)] text-[var(--bg-obsidian)] font-semibold'
+                : 'bg-[var(--bg-obsidian)] border-[var(--border-grid)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--accent-amber)]'
+            }`}
+          >
+            <Sun className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>Solar Terminators</span>
+          </button>
+
+          <button
+            type="button"
             onClick={onToggleAnomalyHeatmap}
             aria-pressed={showAnomalyHeatmap}
+            title="Toggle D3 Climate Anomaly Heatmap overlay (Shortcut: A)"
             className={`px-2.5 py-1 border text-xs font-mono-tabular flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
               showAnomalyHeatmap
-                ? 'bg-[#FB7185] border-[#FB7185] text-[#060B14] font-semibold'
-                : 'bg-[#060B14] border-[#1A2E44] text-[#94A3B8] hover:text-[#F1F5F9] hover:border-[#FB7185]'
+                ? 'bg-[var(--accent-coral)] border-[var(--accent-coral)] text-[var(--bg-obsidian)] font-semibold'
+                : 'bg-[var(--bg-obsidian)] border-[var(--border-grid)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--accent-coral)]'
             }`}
           >
             <Thermometer className="w-3.5 h-3.5" aria-hidden="true" />
             <span>Climate Anomaly Heatmap</span>
           </button>
 
-          <div className="flex border border-[#1A2E44] bg-[#060B14]" role="group" aria-label="Projection Mode">
+          <div
+            className="flex border border-[var(--border-grid)] bg-[var(--bg-obsidian)]"
+            role="group"
+            aria-label="Projection Mode"
+          >
             <button
               type="button"
               onClick={() => onToggleProjection('globe')}
               aria-pressed={projection === 'globe'}
               className={`px-2.5 py-1 text-xs font-mono-tabular flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
                 projection === 'globe'
-                  ? 'bg-[#5EEAD4] text-[#060B14] font-semibold'
-                  : 'text-[#94A3B8] hover:text-[#F1F5F9]'
+                  ? 'bg-[var(--accent-mint)] text-[var(--bg-obsidian)] font-semibold'
+                  : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
               }`}
             >
               <Globe className="w-3.5 h-3.5" aria-hidden="true" />
@@ -809,8 +974,8 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
               aria-pressed={projection === 'plate'}
               className={`px-2.5 py-1 text-xs font-mono-tabular flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
                 projection === 'plate'
-                  ? 'bg-[#5EEAD4] text-[#060B14] font-semibold'
-                  : 'text-[#94A3B8] hover:text-[#F1F5F9]'
+                  ? 'bg-[var(--accent-mint)] text-[var(--bg-obsidian)] font-semibold'
+                  : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
               }`}
             >
               <MapIcon className="w-3.5 h-3.5" aria-hidden="true" />
@@ -821,10 +986,10 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
       </div>
 
       {/* Aspect-aware display container (2:1 natural Plate Carrée footprint, ResizeObserver-driven) */}
-      <div className="bg-[#060B14] p-3">
+      <div className="bg-[var(--bg-obsidian)] p-3">
         <div
           ref={containerRef}
-          className="relative w-full aspect-[2/1] min-h-[220px] border border-[#1A2E44] bg-[#060B14] overflow-hidden"
+          className="relative w-full aspect-[2/1] min-h-[220px] border border-[var(--border-grid)] bg-[var(--bg-obsidian)] overflow-hidden"
         >
           {projection === 'globe' ? (
             <canvas
@@ -837,7 +1002,7 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
                 dragRef.current.active = false;
                 setProbeInfo(null);
               }}
-              className="w-full h-full block cursor-grab active:cursor-grabbing bg-[#060B14]"
+              className="w-full h-full block cursor-grab active:cursor-grabbing bg-[var(--bg-obsidian)]"
               aria-label={`Interactive 3D orthographic Earth globe showing ${layer.phenomenon} for ${dateString}`}
             />
           ) : (
@@ -846,14 +1011,14 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
               ref={mapCanvasRef}
               onMouseMove={handlePlateMove}
               onMouseLeave={() => setProbeInfo(null)}
-              className="w-full h-full block cursor-crosshair bg-[#060B14]"
+              className="w-full h-full block cursor-crosshair bg-[var(--bg-obsidian)]"
               aria-label={`Plate Carree map displaying ${layer.phenomenon} for ${dateString}`}
             />
           )}
 
           {probeInfo && !probeInfo.isDragging && (() => {
-            const tooltipW = 220;
-            const tooltipH = 78;
+            const tooltipW = 228;
+            const tooltipH = (showSolarTerminator ? 98 : 78) + (probeInfo.windSpeedMs !== null ? 20 : 0);
             const margin = 14;
             const left =
               probeInfo.cursorX + margin + tooltipW > containerSize.width
@@ -866,7 +1031,13 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
 
             const isHighAnomaly = probeInfo.anomalyPct >= 60;
             const isElevatedAnomaly = probeInfo.anomalyPct >= 35 && probeInfo.anomalyPct < 60;
-            const accentHex = isHighAnomaly
+            const accentHex = nightMode
+              ? isHighAnomaly
+                ? '#FF6B4A'
+                : isElevatedAnomaly
+                ? '#E04826'
+                : '#FF3B30'
+              : isHighAnomaly
               ? '#FB7185'
               : isElevatedAnomaly
               ? '#F59E0B'
@@ -875,24 +1046,25 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
             return (
               <div
                 aria-hidden="true"
-                className="pointer-events-none absolute z-20 w-[220px] border bg-[#060B14]/95 px-2.5 py-2 font-mono-tabular text-[11px] leading-snug"
+                className="pointer-events-none absolute z-20 w-[228px] border px-2.5 py-2 font-mono-tabular text-[11px] leading-snug"
                 style={{
                   left: `${left}px`,
                   top: `${top}px`,
                   borderColor: accentHex,
+                  backgroundColor: nightMode ? 'rgba(7, 1, 2, 0.95)' : 'rgba(6, 11, 20, 0.95)',
                 }}
               >
-                <div className="flex items-center justify-between text-[#F1F5F9] font-semibold">
+                <div className="flex items-center justify-between text-[var(--text-primary)] font-semibold">
                   <span>{probeInfo.lat}</span>
                   <span>{probeInfo.lon}</span>
                 </div>
                 <div className="mt-1 flex items-center justify-between text-[10px]">
-                  <span className="text-[#94A3B8]">ANOMALY INTENSITY</span>
+                  <span className="text-[var(--text-muted)]">ANOMALY INTENSITY</span>
                   <span className="font-semibold" style={{ color: accentHex }}>
                     {probeInfo.anomalyPct}%
                   </span>
                 </div>
-                <div className="mt-1 h-1 w-full bg-[#111D30] border border-[#1A2E44]">
+                <div className="mt-1 h-1 w-full bg-[var(--bg-panel)] border border-[var(--border-grid)]">
                   <div
                     className="h-full"
                     style={{
@@ -901,31 +1073,106 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
                     }}
                   />
                 </div>
-                <div className="mt-1 flex items-center justify-between text-[10px] text-[#94A3B8]">
+                <div className="mt-1 flex items-center justify-between text-[10px] text-[var(--text-muted)]">
                   <span>
                     ΔT {probeInfo.deltaC >= 0 ? '+' : ''}
                     {probeInfo.deltaC.toFixed(2)}°C
                   </span>
                   <span>LUM {probeInfo.lumPct}%</span>
                 </div>
+                {probeInfo.windSpeedMs !== null && (
+                  <div className="mt-1 flex items-center justify-between text-[10px] text-[var(--text-muted)]">
+                    <span>
+                      WIND {probeInfo.windSpeedMs.toFixed(1)} m/s @{' '}
+                      {String(Math.round(probeInfo.windBearingDeg ?? 0)).padStart(3, '0')}°
+                    </span>
+                    <span className={probeInfo.windOcean ? 'text-[var(--accent-mint)]' : ''}>
+                      {probeInfo.windOcean ? 'OCEAN' : 'LAND'}
+                    </span>
+                  </div>
+                )}
+                {showSolarTerminator && (
+                  <div className="mt-1 pt-1 border-t border-[var(--border-grid)] flex items-center justify-between text-[10px]">
+                    <span
+                      className={
+                        probeInfo.solarRegime === 'DAYLIT'
+                          ? 'text-[var(--accent-amber)]'
+                          : probeInfo.solarRegime === 'NIGHT SHADOW'
+                          ? 'text-[var(--text-muted)]'
+                          : 'text-[var(--accent-mint)]'
+                      }
+                    >
+                      {probeInfo.solarRegime}
+                    </span>
+                    <span className="text-[var(--text-muted)]">
+                      SUN {probeInfo.solarElevDeg >= 0 ? '+' : ''}
+                      {probeInfo.solarElevDeg.toFixed(1)}°
+                    </span>
+                  </div>
+                )}
               </div>
             );
           })()}
         </div>
       </div>
 
+      {showSolarTerminator && (
+        <div
+          aria-label="Live UTC Solar Terminator Ephemeris"
+          className="flex flex-wrap items-center justify-between gap-3 px-4 py-2 border-t border-[var(--border-grid)] bg-[var(--bg-panel)] text-[11px] font-mono-tabular"
+        >
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="text-[var(--accent-amber)] font-semibold whitespace-nowrap">
+              SOLAR TERMINATOR · {solarPosition.utcTimeStr}
+            </span>
+            <span className="text-[var(--text-muted)] flex items-center gap-1.5 whitespace-nowrap">
+              <span className="inline-block w-3 h-[2px] bg-[var(--accent-amber)]" aria-hidden="true" />
+              0° Sunset / Sunrise
+            </span>
+            <span className="text-[var(--text-muted)] flex items-center gap-1.5 whitespace-nowrap">
+              <span
+                className="inline-block w-3 border-t border-dashed border-[var(--text-muted)]"
+                aria-hidden="true"
+              />
+              -6° Civil Twilight
+            </span>
+          </div>
+
+          <div className="flex items-center gap-4 text-[var(--text-muted)] flex-wrap">
+            <span>
+              SUBSOLAR{' '}
+              <strong className="text-[var(--accent-amber)]">
+                {formatCoordLat(solarPosition.subsolarLatDeg)}{' '}
+                {formatCoordLon(solarPosition.subsolarLonDeg)}
+              </strong>
+            </span>
+            <span>
+              DECL{' '}
+              <strong className="text-[var(--text-primary)]">
+                {solarPosition.declinationDeg >= 0 ? '+' : ''}
+                {solarPosition.declinationDeg.toFixed(2)}°
+              </strong>
+            </span>
+          </div>
+        </div>
+      )}
+
       {showAnomalyHeatmap && anomalyField && (
         <div
           aria-label="D3 Temperature Variance Heatmap Scale"
-          className="flex flex-wrap items-center justify-between gap-3 px-4 py-2 border-t border-[#1A2E44] bg-[#111D30] text-[11px] font-mono-tabular"
+          className="flex flex-wrap items-center justify-between gap-3 px-4 py-2 border-t border-[var(--border-grid)] bg-[var(--bg-panel)] text-[11px] font-mono-tabular"
         >
           <div className="flex items-center gap-3 flex-wrap">
-            <span className="text-[#FB7185] font-semibold whitespace-nowrap">
+            <span className="text-[var(--accent-coral)] font-semibold whitespace-nowrap">
               D3 THERMAL VARIANCE (ΔT °C)
             </span>
             <div className="flex items-center gap-1.5">
-              <span className="text-[#94A3B8]">{ANOMALY_MIN_C.toFixed(1)}°C</span>
-              <div className="flex border border-[#1A2E44] h-3" role="img" aria-label="D3 RdBu diverging temperature anomaly ramp from -3.5 to +3.5 degrees Celsius">
+              <span className="text-[var(--text-muted)]">{ANOMALY_MIN_C.toFixed(1)}°C</span>
+              <div
+                className={`flex border border-[var(--border-grid)] h-3 ${nightMode ? 'opacity-70' : ''}`}
+                role="img"
+                aria-label="D3 RdBu diverging temperature anomaly ramp from -3.5 to +3.5 degrees Celsius"
+              >
                 {legendStops.map((stop) => (
                   <span
                     key={stop.tempC}
@@ -935,27 +1182,27 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
                   />
                 ))}
               </div>
-              <span className="text-[#94A3B8]">+{ANOMALY_MAX_C.toFixed(1)}°C</span>
+              <span className="text-[var(--text-muted)]">+{ANOMALY_MAX_C.toFixed(1)}°C</span>
             </div>
           </div>
 
-          <div className="flex items-center gap-4 text-[#94A3B8]">
+          <div className="flex items-center gap-4 text-[var(--text-muted)]">
             <span>
               MEAN{' '}
-              <strong className="text-[#F1F5F9]">
+              <strong className="text-[var(--text-primary)]">
                 {anomalyField.stats.meanC >= 0 ? '+' : ''}
                 {anomalyField.stats.meanC.toFixed(2)}°C
               </strong>
             </span>
             <span>
               PEAK{' '}
-              <strong className="text-[#FB7185]">
+              <strong className="text-[var(--accent-coral)]">
                 +{anomalyField.stats.maxC.toFixed(2)}°C
               </strong>
             </span>
             <span>
               MIN{' '}
-              <strong className="text-[#5EEAD4]">
+              <strong className="text-[var(--accent-mint)]">
                 {anomalyField.stats.minC >= 0 ? '+' : ''}
                 {anomalyField.stats.minC.toFixed(2)}°C
               </strong>
@@ -964,9 +1211,9 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
         </div>
       )}
 
-      <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2 border-t border-[#1A2E44] bg-[#0B1320] text-xs font-mono-tabular">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2 border-t border-[var(--border-grid)] bg-[var(--bg-console)] text-xs font-mono-tabular">
         <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Climate Region Bookmarks">
-          <span className="text-[#94A3B8] mr-1">TARGETS:</span>
+          <span className="text-[var(--text-muted)] mr-1">TARGETS:</span>
           {CLIMATE_BOOKMARKS.map((bm) => (
             <button
               key={bm.id}
@@ -977,8 +1224,8 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
               }}
               className={`px-2 py-0.5 border text-[11px] cursor-pointer whitespace-nowrap ${
                 activeLayerKey === bm.layerKey
-                  ? 'border-[#5EEAD4] text-[#5EEAD4] bg-[#111D30]'
-                  : 'border-[#1A2E44] text-[#94A3B8] hover:text-[#F1F5F9] hover:border-[#5EEAD4]'
+                  ? 'border-[var(--accent-mint)] text-[var(--accent-mint)] bg-[var(--bg-panel)]'
+                  : 'border-[var(--border-grid)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--accent-mint)]'
               }`}
             >
               {bm.label}
@@ -986,7 +1233,7 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
           ))}
         </div>
 
-        <div className="flex items-center gap-4 text-[#94A3B8]">
+        <div className="flex items-center gap-4 text-[var(--text-muted)]">
           <span>
             {probeInfo
               ? `PROBE ${probeInfo.lat} ${probeInfo.lon} · ANOMALY ${probeInfo.anomalyPct}% · ΔT ${
@@ -996,7 +1243,7 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
               ? 'DRAG GLOBE TO ORBIT · HOVER TO PROBE'
               : 'HOVER MAP TO PROBE LAT/LON'}
           </span>
-          <span className="text-[#F1F5F9]">{isLoading ? 'SYNCING...' : dataSource}</span>
+          <span className="text-[var(--text-primary)]">{isLoading ? 'SYNCING...' : dataSource}</span>
         </div>
       </div>
     </section>

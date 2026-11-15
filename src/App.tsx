@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { HelpCircle, Pause, Play, Radio, Speech, Volume2, VolumeX } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { HelpCircle, Moon, Pause, Play, Radio, Speech, Volume2, VolumeX, Wind } from 'lucide-react';
 import { extractFeatureVector, resetFeatureVectorCache } from './analysis/featureVector';
 import {
   ANALYSIS_HEIGHT,
@@ -7,7 +7,12 @@ import {
   loadGIBSFrame,
   renderProceduralFrame,
 } from './analysis/pixelScanner';
-import { AudioEngine } from './audio/audioEngine';
+import {
+  buildWindVectorField,
+  sampleWindAlongHeading,
+  WindVectorField,
+} from './analysis/windVectorField';
+import { AudioEngine, EnvironmentReverbMode, SpatialPanningMode } from './audio/audioEngine';
 import { quantizeToPentatonic, SCALE_DEFINITIONS, ScaleMode } from './audio/scales';
 import { AudioSpectrumBar } from './components/AudioSpectrumBar';
 import { BrandLogo } from './components/BrandLogo';
@@ -18,6 +23,7 @@ import { TemporalTrendsChart } from './components/TemporalTrendsChart';
 import {
   ARCHIVE_YEARS,
   ArchiveYear,
+  AudioEventEntry,
   azimuthToLayerKey,
   EMPTY_FEATURE_VECTOR,
   FeatureVector,
@@ -34,7 +40,7 @@ import {
 import { AccessibilityAnnouncer } from './ui/announcer';
 import { useKeyboardControls } from './ui/useKeyboardControls';
 
-type ReferenceTab = 'log' | 'manual' | 'specs';
+type ReferenceTab = 'log' | 'audio-events' | 'manual' | 'specs';
 
 function createOffscreenCanvas(): HTMLCanvasElement {
   const c = document.createElement('canvas');
@@ -43,15 +49,24 @@ function createOffscreenCanvas(): HTMLCanvasElement {
   return c;
 }
 
-function getUtcClockString(): string {
-  return new Date().toISOString().slice(11, 19) + ' UTC';
+function getUtcClockString(ms = Date.now()): string {
+  return new Date(ms).toISOString().slice(11, 19) + ' UTC';
 }
 
 const ONBOARDING_STORAGE_KEY = 'bea_onboarding_completed_v1';
+const NIGHT_MODE_STORAGE_KEY = 'bea_observatory_night_mode_v1';
 
 function hasCompletedOnboarding(): boolean {
   try {
     return window.localStorage.getItem(ONBOARDING_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function getInitialNightMode(): boolean {
+  try {
+    return window.localStorage.getItem(NIGHT_MODE_STORAGE_KEY) === '1';
   } catch {
     return false;
   }
@@ -80,7 +95,8 @@ export default function App() {
   const monthIndexRef = useRef<number>(11);
   const activeLayerRef = useRef<LayerKey>('north');
 
-  const [utcClock, setUtcClock] = useState<string>(() => getUtcClockString());
+  const [utcTimestampMs, setUtcTimestampMs] = useState<number>(() => Date.now());
+  const utcClock = getUtcClockString(utcTimestampMs);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [isTestingSpatial, setIsTestingSpatial] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -91,8 +107,16 @@ export default function App() {
   const [masterVolume, setMasterVolume] = useState<number>(0.72);
   const [speechEnabled, setSpeechEnabled] = useState<boolean>(false);
   const [scaleMode, setScaleMode] = useState<ScaleMode>('pentatonic');
+  const [reverbMode, setReverbMode] = useState<EnvironmentReverbMode>('vacuum');
+  const [panningMode, setPanningMode] = useState<SpatialPanningMode>('smooth360');
+  const [atmosphericFlowEnabled, setAtmosphericFlowEnabled] = useState<boolean>(true);
+  const [windField, setWindField] = useState<WindVectorField | null>(null);
   const [projection, setProjection] = useState<ProjectionMode>('globe');
   const [showAnomalyHeatmap, setShowAnomalyHeatmap] = useState<boolean>(false);
+  const [showSolarTerminator, setShowSolarTerminator] = useState<boolean>(true);
+  const [observatoryNightMode, setObservatoryNightMode] = useState<boolean>(() =>
+    getInitialNightMode()
+  );
   const [isOnboardingOpen, setIsOnboardingOpen] = useState<boolean>(() => !hasCompletedOnboarding());
   const [activeTab, setActiveTab] = useState<ReferenceTab>('log');
   const [cadenceMs, setCadenceMs] = useState<number>(2000);
@@ -114,6 +138,7 @@ export default function App() {
   });
 
   const [history, setHistory] = useState<TelemetryPoint[]>([]);
+  const [audioEvents, setAudioEvents] = useState<AudioEventEntry[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([
     {
       id: 'boot-1',
@@ -140,12 +165,26 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    audioEngineRef.current = new AudioEngine();
+    const engine = new AudioEngine();
+    engine.setAudioEventListener((evt) => {
+      setAudioEvents((prev) => {
+        const duplicateLatest = prev.some(
+          (item) =>
+            item.dateStr === evt.dateStr &&
+            item.layerKey === evt.layerKey &&
+            item.kind === evt.kind &&
+            Math.abs(item.value - evt.value) < 0.001
+        );
+        if (duplicateLatest) return prev;
+        return [evt, ...prev].slice(0, 60);
+      });
+    });
+    audioEngineRef.current = engine;
     announcerRef.current = new AccessibilityAnnouncer();
     announcerRef.current.attachElement(ariaLiveElRef.current);
 
     const clockInterval = window.setInterval(() => {
-      setUtcClock(getUtcClockString());
+      setUtcTimestampMs(Date.now());
     }, 1000);
 
     return () => {
@@ -153,7 +192,8 @@ export default function App() {
       if (sequencerTimerRef.current !== null) {
         window.clearTimeout(sequencerTimerRef.current);
       }
-      audioEngineRef.current?.dispose();
+      engine.setAudioEventListener(null);
+      engine.dispose();
       announcerRef.current?.dispose();
     };
   }, []);
@@ -166,13 +206,31 @@ export default function App() {
     activeLayerRef.current = activeLayerKey;
   }, [activeLayerKey]);
 
+  useEffect(() => {
+    document.documentElement.classList.toggle('observatory-night', observatoryNightMode);
+    try {
+      window.localStorage.setItem(NIGHT_MODE_STORAGE_KEY, observatoryNightMode ? '1' : '0');
+    } catch {
+      // Ignore storage restrictions
+    }
+  }, [observatoryNightMode]);
+
   const recomputeFrequencies = useCallback(
-    (vecs: Record<LayerKey, FeatureVector>, mode: ScaleMode): Record<LayerKey, number> => {
+    (
+      vecs: Record<LayerKey, FeatureVector>,
+      mode: ScaleMode,
+      targetCadenceMs: number
+    ): Record<LayerKey, number> => {
+      const applyDoppler = (key: LayerKey) => {
+        const base = quantizeToPentatonic(vecs[key].hue, vecs[key].brightness, mode).frequency;
+        const { multiplier } = AudioEngine.computeDopplerShift(vecs[key].motion, targetCadenceMs);
+        return base * multiplier;
+      };
       return {
-        north: quantizeToPentatonic(vecs.north.hue, vecs.north.brightness, mode).frequency,
-        east: quantizeToPentatonic(vecs.east.hue, vecs.east.brightness, mode).frequency,
-        south: quantizeToPentatonic(vecs.south.hue, vecs.south.brightness, mode).frequency,
-        west: quantizeToPentatonic(vecs.west.hue, vecs.west.brightness, mode).frequency,
+        north: applyDoppler('north'),
+        east: applyDoppler('east'),
+        south: applyDoppler('south'),
+        west: applyDoppler('west'),
       };
     },
     []
@@ -217,17 +275,24 @@ export default function App() {
         monthIndexRef.current = targetMonth;
         setFrameRevision((r) => r + 1);
 
-        const nextFreqs = recomputeFrequencies(nextVectors, scaleMode);
+        const nextFreqs = recomputeFrequencies(nextVectors, scaleMode, nextCadence);
         setFrequencies(nextFreqs);
 
         if (updateAudio && audioEngineRef.current?.isRunning()) {
-          audioEngineRef.current.updateAllLayers(nextVectors, nextCadence);
+          audioEngineRef.current.updateAllLayers(nextVectors, nextCadence, dateStr);
+        } else {
+          audioEngineRef.current?.evaluateArchiveEvents(nextVectors, nextCadence, dateStr);
         }
+
+        const nextWindField = await buildWindVectorField(dateStr, canvases.south, canvases.east);
+        setWindField(nextWindField);
+        audioEngineRef.current?.updateWindField(nextWindField);
 
         const intensity = Number(
           ((currentLayerVec.brightness + currentLayerVec.saturation) / 2).toFixed(3)
         );
         const anomaly = Number(currentLayerVec.climateAnomaly.toFixed(3));
+        const dopplerShift = AudioEngine.computeDopplerShift(currentLayerVec.motion, nextCadence);
         const label = MONTH_NAMES[targetMonth - 1];
 
         setHistory((prev) => {
@@ -246,12 +311,16 @@ export default function App() {
 
         if (targetMonth === 9) {
           appendLog(
-            `${dateStr} BENCHMARK · ARCTIC SUMMER MINIMUM · ANOMALY ${(anomaly * 100).toFixed(1)}%`,
+            `${dateStr} BENCHMARK · ARCTIC SUMMER MINIMUM · ANOMALY ${(anomaly * 100).toFixed(
+              1
+            )}% · DOPPLER +${dopplerShift.shiftPct.toFixed(1)}%`,
             'coral'
           );
         } else {
           appendLog(
-            `INGESTED ${dateStr} · ${primarySource.toUpperCase()} · CADENCE ${nextCadence}MS`,
+            `INGESTED ${dateStr} · ${primarySource.toUpperCase()} · CADENCE ${nextCadence}MS · DOPPLER +${dopplerShift.shiftPct.toFixed(
+              1
+            )}%`,
             'info'
           );
         }
@@ -360,31 +429,39 @@ export default function App() {
 
   const handleSetHeading = useCallback(
     (rawAngleDeg: number, customAnnouncement?: string) => {
-      const normalized = ((Math.round(rawAngleDeg) % 360) + 360) % 360;
-      const nearestKey = azimuthToLayerKey(normalized);
+      const normalizedRaw = ((Math.round(rawAngleDeg) % 360) + 360) % 360;
+      const effectiveAngle =
+        panningMode === 'cardinal'
+          ? ((Math.round(normalizedRaw / 90) * 90) % 360 + 360) % 360
+          : normalizedRaw;
+      const nearestKey = azimuthToLayerKey(effectiveAngle);
       const meta = NASA_GIBS_LAYERS[nearestKey];
 
-      setListenerAngle(normalized);
+      setListenerAngle(effectiveAngle);
       setActiveLayerKey(nearestKey);
       activeLayerRef.current = nearestKey;
-      audioEngineRef.current?.setHeading(normalized);
+      audioEngineRef.current?.setHeading(effectiveAngle);
 
       const vec = vectors[nearestKey];
       if (vec) {
-        setCadenceMs(Math.round(2500 - vec.motion * 1000));
+        const nextCadence = Math.round(2500 - vec.motion * 1000);
+        setCadenceMs(nextCadence);
+        setFrequencies(recomputeFrequencies(vectors, scaleMode, nextCadence));
       }
 
       setFrameRevision((r) => r + 1);
       appendLog(
-        `HEADING ${String(normalized).padStart(3, '0')}° · FOCUS ${meta.cardinal.toUpperCase()} (${meta.domain.toUpperCase()})`,
+        `HEADING ${String(effectiveAngle).padStart(3, '0')}° · ${
+          panningMode === 'smooth360' ? '360° SMOOTH HRTF' : 'CARDINAL SNAP'
+        } · FOCUS ${meta.cardinal.toUpperCase()} (${meta.domain.toUpperCase()})`,
         'mint'
       );
       announcerRef.current?.announce(
         customAnnouncement ??
-          `Facing ${normalized} degrees, ${meta.cardinal}. Active observation: ${meta.phenomenon}.`
+          `Facing ${effectiveAngle} degrees, nearest cardinal ${meta.cardinal}. Active observation: ${meta.phenomenon}.`
       );
     },
-    [appendLog, vectors]
+    [appendLog, panningMode, recomputeFrequencies, scaleMode, vectors]
   );
 
   const handleSelectLayer = useCallback(
@@ -453,6 +530,7 @@ export default function App() {
         sequencerTimerRef.current = null;
       }
       resetFeatureVectorCache();
+      audioEngineRef.current?.resetArchiveEventHistory();
       setHistory([]);
       archiveYearRef.current = targetYear;
       setArchiveYear(targetYear);
@@ -477,7 +555,7 @@ export default function App() {
   const handleScaleModeChange = (mode: ScaleMode) => {
     setScaleMode(mode);
     audioEngineRef.current?.setScaleMode(mode);
-    const nextFreqs = recomputeFrequencies(vectors, mode);
+    const nextFreqs = recomputeFrequencies(vectors, mode, cadenceMs);
     setFrequencies(nextFreqs);
     if (audioEngineRef.current?.isRunning()) {
       audioEngineRef.current.updateAllLayers(vectors, cadenceMs);
@@ -522,6 +600,20 @@ export default function App() {
     });
   }, [appendLog]);
 
+  const handleToggleSolarTerminator = useCallback(() => {
+    setShowSolarTerminator((prev) => {
+      const next = !prev;
+      appendLog(
+        `SOLAR TERMINATORS OVERLAY ${next ? 'ENABLED' : 'DISABLED'} · ${getUtcClockString()}`,
+        next ? 'mint' : 'info'
+      );
+      announcerRef.current?.announceImmediate(
+        `Solar Terminators shadow overlay ${next ? 'enabled' : 'disabled'}.`
+      );
+      return next;
+    });
+  }, [appendLog]);
+
   const handleCloseOnboarding = useCallback(
     (startAudioAfter = false) => {
       try {
@@ -543,12 +635,95 @@ export default function App() {
     [appendLog, handleTogglePlay]
   );
 
+  const handleReverbModeChange = useCallback(
+    (mode: EnvironmentReverbMode) => {
+      setReverbMode(mode);
+      audioEngineRef.current?.setEnvironmentReverb(mode);
+      const label =
+        mode === 'vacuum' ? 'Vacuum / Deep Space (Dry)' : 'Planetary Atmospheric (Wet Convolution)';
+      appendLog(`ENVIRONMENT REVERB -> ${label.toUpperCase()}`, 'mint');
+      announcerRef.current?.announce(`Environment reverb set to ${label}.`);
+    },
+    [appendLog]
+  );
+
+  const handleToggleReverb = useCallback(() => {
+    setReverbMode((prev) => {
+      const next: EnvironmentReverbMode = prev === 'vacuum' ? 'atmospheric' : 'vacuum';
+      audioEngineRef.current?.setEnvironmentReverb(next);
+      const label =
+        next === 'vacuum' ? 'Vacuum / Deep Space (Dry)' : 'Planetary Atmospheric (Wet Convolution)';
+      appendLog(`ENVIRONMENT REVERB -> ${label.toUpperCase()}`, 'mint');
+      announcerRef.current?.announce(`Environment reverb set to ${label}.`);
+      return next;
+    });
+  }, [appendLog]);
+
+  const handleToggleNightMode = useCallback(() => {
+    setObservatoryNightMode((prev) => {
+      const next = !prev;
+      appendLog(
+        next
+          ? 'OBSERVATORY NIGHT MODE ENABLED · DEEP RED DARK-ADAPTATION PALETTE & REDUCED CANVAS BLOOM'
+          : 'OBSERVATORY NIGHT MODE DISABLED · STANDARD OBSIDIAN SPECTRUM RESTORED',
+        next ? 'coral' : 'info'
+      );
+      announcerRef.current?.announceImmediate(
+        next
+          ? 'Observatory night mode enabled. Deep red dark adaptation palette active and canvas bloom reduced.'
+          : 'Observatory night mode disabled. Standard spectrum restored.'
+      );
+      return next;
+    });
+  }, [appendLog]);
+
+  const handlePanningModeChange = useCallback(
+    (mode: SpatialPanningMode) => {
+      setPanningMode(mode);
+      audioEngineRef.current?.setPanningMode(mode);
+      if (mode === 'cardinal') {
+        const snapped = ((Math.round(listenerAngle / 90) * 90) % 360 + 360) % 360;
+        const nearestKey = azimuthToLayerKey(snapped);
+        setListenerAngle(snapped);
+        setActiveLayerKey(nearestKey);
+        activeLayerRef.current = nearestKey;
+      }
+      const label =
+        mode === 'smooth360'
+          ? 'Full 360° Smooth HRTF Panning'
+          : 'Cardinal Layer Snap (90° Crossfade)';
+      appendLog(`SPATIAL PANNING MODE -> ${label.toUpperCase()}`, 'mint');
+      announcerRef.current?.announceImmediate(`Spatial panning mode set to ${label}.`);
+    },
+    [appendLog, listenerAngle]
+  );
+
+  const handleTogglePanningMode = useCallback(() => {
+    handlePanningModeChange(panningMode === 'smooth360' ? 'cardinal' : 'smooth360');
+  }, [handlePanningModeChange, panningMode]);
+
+  const handleToggleAtmosphericFlow = useCallback(() => {
+    setAtmosphericFlowEnabled((prev) => {
+      const next = !prev;
+      audioEngineRef.current?.setAtmosphericFlowEnabled(next);
+      appendLog(
+        `ATMOSPHERIC FLOW (GRANULAR WIND) ${next ? 'ENABLED' : 'MUTED'}`,
+        next ? 'mint' : 'info'
+      );
+      announcerRef.current?.announceImmediate(
+        `Atmospheric flow granular wind noise-floor ${next ? 'enabled' : 'muted'}.`
+      );
+      return next;
+    });
+  }, [appendLog]);
+
   const handleAnnounceOnboardingStep = useCallback((msg: string) => {
     announcerRef.current?.announceImmediate(msg);
   }, []);
 
   useKeyboardControls({
     disabled: isOnboardingOpen,
+    panningMode,
     onTogglePlay: () => {
       void handleTogglePlay();
     },
@@ -560,15 +735,25 @@ export default function App() {
       setProjection((prev) => (prev === 'globe' ? 'plate' : 'globe'));
     },
     onToggleAnomalyHeatmap: handleToggleAnomalyHeatmap,
+    onToggleSolarTerminator: handleToggleSolarTerminator,
+    onToggleReverb: handleToggleReverb,
+    onTogglePanningMode: handleTogglePanningMode,
+    onToggleAtmosphericFlow: handleToggleAtmosphericFlow,
+    onToggleNightMode: handleToggleNightMode,
   });
 
   const activeLayer = NASA_GIBS_LAYERS[activeLayerKey];
   const activeVector = vectors[activeLayerKey];
+  const headingWind = useMemo(
+    () => (windField ? sampleWindAlongHeading(windField, listenerAngle) : null),
+    [windField, listenerAngle]
+  );
   const activeDateStr = formatArchiveDate(archiveYear, monthIndex);
   const maxMonth = getMaxMonthForYear(archiveYear);
   const benchmarks = getSeasonalBenchmarks(archiveYear);
   const activeCanvas = offscreenMapRef.current?.[activeLayerKey] ?? null;
   const sstCanvas = offscreenMapRef.current?.south ?? null;
+  const activeDoppler = AudioEngine.computeDopplerShift(activeVector.motion, cadenceMs);
   const activePitchHz = frequencies[activeLayerKey] ?? 220;
   const activeFilterHz = Math.round(400 + activeVector.saturation * 5600);
   const activeNoteDegree = Math.floor(activeVector.hue * 9.99) + 1;
@@ -577,7 +762,7 @@ export default function App() {
     {
       label: 'Brightness',
       value: activeVector.brightness,
-      target: `${activePitchHz.toFixed(0)} Hz Register`,
+      target: `${activePitchHz.toFixed(0)} Hz (${activeDoppler.multiplier.toFixed(3)}×)`,
       isCoral: false,
     },
     {
@@ -606,7 +791,7 @@ export default function App() {
     {
       label: 'Frame Motion',
       value: activeVector.motion,
-      target: `${cadenceMs} ms Tempo`,
+      target: `${cadenceMs} ms · Doppler +${activeDoppler.shiftPct.toFixed(1)}%`,
       isCoral: false,
     },
     {
@@ -647,7 +832,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#060B14] text-[#F1F5F9]">
+    <div className="min-h-screen flex flex-col bg-[var(--bg-obsidian)] text-[var(--text-primary)]">
       <div
         id="aria-announcer"
         ref={ariaLiveElRef}
@@ -660,39 +845,45 @@ export default function App() {
       {/* TOP TELEMETRY RIBBON */}
       <header
         role="banner"
-        className="border-b border-[#1A2E44] bg-[#0B1320] px-4 py-2.5 flex flex-wrap items-center justify-between gap-4"
+        className="border-b border-[var(--border-grid)] bg-[var(--bg-console)] px-4 py-2.5 flex flex-wrap items-center justify-between gap-4"
       >
         <div className="flex items-center gap-3 min-w-0">
-          <BrandLogo size={34} />
+          <BrandLogo size={34} nightMode={observatoryNightMode} />
           <h1 className="text-base sm:text-lg font-bold tracking-tight whitespace-nowrap">
-            <span className="bg-gradient-to-r from-[#38BDF8] via-[#2DD4BF] to-[#5EEAD4] bg-clip-text text-transparent">
+            <span
+              className={`bg-gradient-to-r bg-clip-text text-transparent ${
+                observatoryNightMode
+                  ? 'from-[#B91C1C] via-[#DC2626] to-[#FF3B30]'
+                  : 'from-[#38BDF8] via-[#2DD4BF] to-[#5EEAD4]'
+              }`}
+            >
               Binaural Earth
             </span>{' '}
-            <span className="text-[#F1F5F9]">Atlas</span>
+            <span className="text-[var(--text-primary)]">Atlas</span>
           </h1>
-          <span className="hidden md:inline text-xs font-mono-tabular text-[#94A3B8] whitespace-nowrap">
+          <span className="hidden md:inline text-xs font-mono-tabular text-[var(--text-muted)] whitespace-nowrap">
             · 3D Orbital Acoustic Observatory
           </span>
         </div>
 
-        <div className="flex flex-wrap items-center gap-4 text-xs font-mono-tabular">
-          <span className="text-[#94A3B8]">
-            EPOCH <strong className="text-[#5EEAD4] font-semibold">{activeDateStr}</strong>
+        <div className="flex flex-wrap items-center gap-3 text-xs font-mono-tabular">
+          <span className="text-[var(--text-muted)]">
+            EPOCH <strong className="text-[var(--accent-mint)] font-semibold">{activeDateStr}</strong>
           </span>
-          <span className="text-[#94A3B8]">
+          <span className="text-[var(--text-muted)]">
             HDG{' '}
-            <strong className="text-[#F1F5F9] font-semibold">
+            <strong className="text-[var(--text-primary)] font-semibold">
               {String(Math.round(listenerAngle)).padStart(3, '0')}° {activeLayer.shortCardinal}
             </strong>
           </span>
-          <span className="hidden sm:inline text-[#94A3B8]">{utcClock}</span>
+          <span className="hidden sm:inline text-[var(--text-muted)]">{utcClock}</span>
 
           <button
             ref={guideButtonRef}
             type="button"
             onClick={() => setIsOnboardingOpen(true)}
             aria-haspopup="dialog"
-            className="px-2.5 py-1.5 border border-[#1A2E44] bg-[#060B14] text-xs font-mono-tabular text-[#94A3B8] hover:text-[#F1F5F9] hover:border-[#5EEAD4] flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+            className="px-2.5 py-1.5 border border-[var(--border-grid)] bg-[var(--bg-obsidian)] text-xs font-mono-tabular text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--accent-mint)] flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
           >
             <HelpCircle className="w-3.5 h-3.5" aria-hidden="true" />
             <span>Guide</span>
@@ -704,8 +895,8 @@ export default function App() {
             aria-pressed={speechEnabled}
             className={`px-2.5 py-1.5 border text-xs font-mono-tabular flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
               speechEnabled
-                ? 'bg-[#111D30] border-[#5EEAD4] text-[#5EEAD4]'
-                : 'bg-[#060B14] border-[#1A2E44] text-[#94A3B8] hover:text-[#F1F5F9] hover:border-[#5EEAD4]'
+                ? 'bg-[var(--bg-panel)] border-[var(--accent-mint)] text-[var(--accent-mint)]'
+                : 'bg-[var(--bg-obsidian)] border-[var(--border-grid)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--accent-mint)]'
             }`}
           >
             <Speech className="w-3.5 h-3.5" aria-hidden="true" />
@@ -714,12 +905,27 @@ export default function App() {
 
           <button
             type="button"
+            onClick={handleToggleNightMode}
+            aria-pressed={observatoryNightMode}
+            title="Observatory Night Mode (N) — High-contrast deep red palette & reduced canvas bloom"
+            className={`px-2.5 py-1.5 border text-xs font-mono-tabular flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+              observatoryNightMode
+                ? 'bg-[var(--bg-panel)] border-[var(--accent-mint)] text-[var(--accent-mint)] font-semibold'
+                : 'bg-[var(--bg-obsidian)] border-[var(--border-grid)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--accent-mint)]'
+            }`}
+          >
+            <Moon className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>Night Mode: {observatoryNightMode ? 'ON' : 'OFF'}</span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => void handleTogglePlay()}
             aria-pressed={isPlaying}
             className={`px-3.5 py-1.5 border text-xs font-semibold uppercase tracking-wider flex items-center gap-2 cursor-pointer whitespace-nowrap ${
               isPlaying
-                ? 'bg-[#FB7185] border-[#FB7185] text-[#060B14] hover:bg-[#fda4af]'
-                : 'bg-[#5EEAD4] border-[#5EEAD4] text-[#060B14] hover:bg-[#99f6e4]'
+                ? 'bg-[var(--accent-coral)] border-[var(--accent-coral)] text-[var(--bg-obsidian)] hover:opacity-90'
+                : 'bg-[var(--accent-mint)] border-[var(--accent-mint)] text-[var(--bg-obsidian)] hover:opacity-90'
             }`}
           >
             {isPlaying ? (
@@ -740,7 +946,7 @@ export default function App() {
       {/* MAIN OBSERVATORY STAGE: 65% VISUAL & CHRONOLOGY | 35% ACOUSTIC & TELEMETRY */}
       <main className="flex-1 grid grid-cols-1 lg:grid-cols-[1fr_minmax(360px,36%)]">
         {/* LEFT / CENTER STAGE */}
-        <div className="p-4 flex flex-col gap-4 border-b lg:border-b-0 lg:border-r border-[#1A2E44]">
+        <div className="p-4 flex flex-col gap-4 border-b lg:border-b-0 lg:border-r border-[var(--border-grid)]">
           <SatelliteMapCanvas
             sourceCanvas={activeCanvas}
             sstCanvas={sstCanvas}
@@ -752,8 +958,13 @@ export default function App() {
             isLoading={isLoading}
             projection={projection}
             showAnomalyHeatmap={showAnomalyHeatmap}
+            showSolarTerminator={showSolarTerminator}
+            utcTimestampMs={utcTimestampMs}
+            windField={windField}
+            nightMode={observatoryNightMode}
             onToggleProjection={setProjection}
             onToggleAnomalyHeatmap={handleToggleAnomalyHeatmap}
+            onToggleSolarTerminator={handleToggleSolarTerminator}
             onSelectBookmark={(key, label) => {
               handleSelectLayer(key);
               appendLog(`TARGET LOCKED: ${label.toUpperCase()}`, 'mint');
@@ -763,14 +974,14 @@ export default function App() {
           {/* CHRONOLOGY & ACOUSTIC DECK */}
           <section
             aria-label="Satellite Archive Chronology and Acoustic Controls"
-            className="border border-[#1A2E44] bg-[#0B1320] p-4 flex flex-col gap-3"
+            className="border border-[var(--border-grid)] bg-[var(--bg-console)] p-4 flex flex-col gap-3"
           >
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex flex-wrap items-center gap-3">
-                <h2 className="text-xs font-semibold uppercase tracking-wider text-[#F1F5F9]">
-                  NASA Satellite Archive Sequencer
+                <h2 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-primary)]">
+                  NASA Satellite Archive Sequencer &amp; Settings
                 </h2>
-                <span className="text-xs font-mono-tabular text-[#5EEAD4]">
+                <span className="text-xs font-mono-tabular text-[var(--accent-mint)]">
                   {MONTH_NAMES[monthIndex - 1]} {archiveYear} · CADENCE {cadenceMs} MS
                 </span>
               </div>
@@ -778,7 +989,7 @@ export default function App() {
               <div className="flex flex-wrap items-center gap-2">
                 {/* Archive Year Switcher (2026 / 2025 / 2007) */}
                 <div
-                  className="flex border border-[#1A2E44] bg-[#060B14]"
+                  className="flex border border-[var(--border-grid)] bg-[var(--bg-obsidian)]"
                   role="group"
                   aria-label="Archive Year Selector"
                 >
@@ -790,8 +1001,8 @@ export default function App() {
                       aria-pressed={archiveYear === yr}
                       className={`px-2.5 py-1 text-xs font-mono-tabular cursor-pointer whitespace-nowrap ${
                         archiveYear === yr
-                          ? 'bg-[#5EEAD4] text-[#060B14] font-semibold'
-                          : 'text-[#94A3B8] hover:text-[#F1F5F9]'
+                          ? 'bg-[var(--accent-mint)] text-[var(--bg-obsidian)] font-semibold'
+                          : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
                       }`}
                     >
                       {yr}
@@ -801,9 +1012,24 @@ export default function App() {
 
                 <button
                   type="button"
+                  onClick={handleToggleNightMode}
+                  aria-pressed={observatoryNightMode}
+                  title="Observatory Night Mode (N) — Deep red dark-adaptation palette & reduced canvas bloom"
+                  className={`px-2.5 py-1 border text-xs font-mono-tabular flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                    observatoryNightMode
+                      ? 'bg-[var(--accent-mint)] border-[var(--accent-mint)] text-[var(--bg-obsidian)] font-semibold'
+                      : 'bg-[var(--bg-obsidian)] border-[var(--border-grid)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--accent-mint)]'
+                  }`}
+                >
+                  <Moon className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Observatory Night Mode</span>
+                </button>
+
+                <button
+                  type="button"
                   onClick={() => void handleTestSpatialAudio()}
                   disabled={isTestingSpatial}
-                  className="px-3 py-1 border border-[#1A2E44] bg-[#060B14] text-[#F1F5F9] hover:border-[#5EEAD4] hover:text-[#5EEAD4] disabled:opacity-60 text-xs font-mono-tabular flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                  className="px-3 py-1 border border-[var(--border-grid)] bg-[var(--bg-obsidian)] text-[var(--text-primary)] hover:border-[var(--accent-mint)] hover:text-[var(--accent-mint)] disabled:opacity-60 text-xs font-mono-tabular flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
                 >
                   <Radio className="w-3.5 h-3.5" aria-hidden="true" />
                   <span>{isTestingSpatial ? 'Sweeping N→E→S→W' : 'Test Spatial Sweep'}</span>
@@ -811,75 +1037,174 @@ export default function App() {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-[1fr_210px_210px] gap-3 items-center">
-              {/* Timeline Scrubber */}
-              <div className="border border-[#1A2E44] bg-[#060B14] p-2.5">
-                <div className="flex items-center justify-between text-[11px] font-mono-tabular text-[#94A3B8] mb-1.5">
-                  <label htmlFor="timelineSlider">
-                    {archiveYear} TIMELINE (JAN – {archiveYear === 2026 ? 'NOV' : 'DEC'})
-                  </label>
-                  <span className="text-[#5EEAD4]">{activeDateStr}</span>
+            <div className="flex flex-col gap-3">
+              {/* Row 1: Timeline & Master Gain */}
+              <div className="grid grid-cols-1 md:grid-cols-[1fr_210px] gap-3 items-stretch">
+                {/* Timeline Scrubber */}
+                <div className="border border-[var(--border-grid)] bg-[var(--bg-obsidian)] p-2.5">
+                  <div className="flex items-center justify-between text-[11px] font-mono-tabular text-[var(--text-muted)] mb-1.5">
+                    <label htmlFor="timelineSlider">
+                      {archiveYear} TIMELINE (JAN – {archiveYear === 2026 ? 'NOV' : 'DEC'})
+                    </label>
+                    <span className="text-[var(--accent-mint)]">{activeDateStr}</span>
+                  </div>
+                  <input
+                    id="timelineSlider"
+                    type="range"
+                    min={1}
+                    max={maxMonth}
+                    step={1}
+                    value={monthIndex}
+                    onChange={(e) => void handleScrubMonth(parseInt(e.target.value, 10))}
+                    className="scientific-slider"
+                    aria-label={`${archiveYear} satellite archive month scrubber`}
+                  />
                 </div>
-                <input
-                  id="timelineSlider"
-                  type="range"
-                  min={1}
-                  max={maxMonth}
-                  step={1}
-                  value={monthIndex}
-                  onChange={(e) => void handleScrubMonth(parseInt(e.target.value, 10))}
-                  className="scientific-slider"
-                  aria-label={`${archiveYear} satellite archive month scrubber`}
-                />
+
+                {/* Master Volume */}
+                <div className="border border-[var(--border-grid)] bg-[var(--bg-obsidian)] p-2.5">
+                  <div className="flex items-center justify-between text-[11px] font-mono-tabular text-[var(--text-muted)] mb-1.5">
+                    <label htmlFor="volumeSlider" className="flex items-center gap-1.5">
+                      {masterVolume === 0 ? (
+                        <VolumeX className="w-3.5 h-3.5 text-[var(--accent-coral)]" aria-hidden="true" />
+                      ) : (
+                        <Volume2 className="w-3.5 h-3.5 text-[var(--accent-mint)]" aria-hidden="true" />
+                      )}
+                      <span>MASTER GAIN</span>
+                    </label>
+                    <span className="text-[var(--text-primary)]">{Math.round(masterVolume * 100)}%</span>
+                  </div>
+                  <input
+                    id="volumeSlider"
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    value={masterVolume}
+                    onChange={(e) => handleVolumeChange(parseFloat(e.target.value))}
+                    className="scientific-slider"
+                    aria-label="Master audio gain"
+                  />
+                </div>
               </div>
 
-              {/* Master Volume */}
-              <div className="border border-[#1A2E44] bg-[#060B14] p-2.5">
-                <div className="flex items-center justify-between text-[11px] font-mono-tabular text-[#94A3B8] mb-1.5">
-                  <label htmlFor="volumeSlider" className="flex items-center gap-1.5">
-                    {masterVolume === 0 ? (
-                      <VolumeX className="w-3.5 h-3.5 text-[#FB7185]" aria-hidden="true" />
-                    ) : (
-                      <Volume2 className="w-3.5 h-3.5 text-[#5EEAD4]" aria-hidden="true" />
-                    )}
-                    <span>MASTER GAIN</span>
-                  </label>
-                  <span className="text-[#F1F5F9]">{Math.round(masterVolume * 100)}%</span>
+              {/* Row 2: Harmonic Quantizer, Environment Reverb, Atmospheric Flow (Granular Wind) */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-stretch">
+                {/* Harmonic Scale Selector */}
+                <div className="border border-[var(--border-grid)] bg-[var(--bg-obsidian)] p-2.5 flex flex-col justify-between">
+                  <div className="text-[11px] font-mono-tabular text-[var(--text-muted)] mb-1.5">
+                    HARMONIC QUANTIZER
+                  </div>
+                  <div className="grid grid-cols-3 gap-1" role="group" aria-label="Harmonic Scale Mode">
+                    {(['pentatonic', 'dorian', 'harmonic'] as ScaleMode[]).map((mode) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={() => handleScaleModeChange(mode)}
+                        aria-pressed={scaleMode === mode}
+                        className={`py-1 text-[10px] font-mono-tabular uppercase border cursor-pointer ${
+                          scaleMode === mode
+                            ? 'bg-[var(--accent-mint)] border-[var(--accent-mint)] text-[var(--bg-obsidian)] font-semibold'
+                            : 'bg-[var(--bg-console)] border-[var(--border-grid)] text-[var(--text-muted)] hover:text-[var(--text-primary)]'
+                        }`}
+                      >
+                        {mode === 'pentatonic' ? 'PENTA' : mode === 'dorian' ? 'DORIAN' : 'HARM'}
+                      </button>
+                    ))}
+                  </div>
                 </div>
-                <input
-                  id="volumeSlider"
-                  type="range"
-                  min={0}
-                  max={1}
-                  step={0.01}
-                  value={masterVolume}
-                  onChange={(e) => handleVolumeChange(parseFloat(e.target.value))}
-                  className="scientific-slider"
-                  aria-label="Master audio gain"
-                />
-              </div>
 
-              {/* Harmonic Scale Selector */}
-              <div className="border border-[#1A2E44] bg-[#060B14] p-2.5">
-                <div className="text-[11px] font-mono-tabular text-[#94A3B8] mb-1">
-                  HARMONIC QUANTIZER
-                </div>
-                <div className="grid grid-cols-3 gap-1" role="group" aria-label="Harmonic Scale Mode">
-                  {(['pentatonic', 'dorian', 'harmonic'] as ScaleMode[]).map((mode) => (
+                {/* Environment Reverb Selector */}
+                <div className="border border-[var(--border-grid)] bg-[var(--bg-obsidian)] p-2.5 flex flex-col justify-between">
+                  <div className="flex items-center justify-between text-[11px] font-mono-tabular text-[var(--text-muted)] mb-1.5">
+                    <span>ENVIRONMENT REVERB</span>
+                    <span className="text-[var(--accent-mint)]">
+                      {reverbMode === 'vacuum' ? 'DRY' : 'WET IR'}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-1" role="group" aria-label="Environment Reverb">
                     <button
-                      key={mode}
                       type="button"
-                      onClick={() => handleScaleModeChange(mode)}
-                      aria-pressed={scaleMode === mode}
-                      className={`py-1 text-[10px] font-mono-tabular uppercase border cursor-pointer ${
-                        scaleMode === mode
-                          ? 'bg-[#5EEAD4] border-[#5EEAD4] text-[#060B14] font-semibold'
-                          : 'bg-[#0B1320] border-[#1A2E44] text-[#94A3B8] hover:text-[#F1F5F9]'
+                      onClick={() => handleReverbModeChange('vacuum')}
+                      aria-pressed={reverbMode === 'vacuum'}
+                      title="Dry spatial signal with zero reverberation"
+                      className={`py-1 px-1.5 text-[10px] font-mono-tabular uppercase border cursor-pointer whitespace-nowrap truncate ${
+                        reverbMode === 'vacuum'
+                          ? 'bg-[var(--accent-mint)] border-[var(--accent-mint)] text-[var(--bg-obsidian)] font-semibold'
+                          : 'bg-[var(--bg-console)] border-[var(--border-grid)] text-[var(--text-muted)] hover:text-[var(--text-primary)]'
                       }`}
                     >
-                      {mode === 'pentatonic' ? 'PENTA' : mode === 'dorian' ? 'DORIAN' : 'HARM'}
+                      Vacuum / Space
                     </button>
-                  ))}
+                    <button
+                      type="button"
+                      onClick={() => handleReverbModeChange('atmospheric')}
+                      aria-pressed={reverbMode === 'atmospheric'}
+                      title="2.8s stereo planetary atmospheric convolution reverb"
+                      className={`py-1 px-1.5 text-[10px] font-mono-tabular uppercase border cursor-pointer whitespace-nowrap truncate ${
+                        reverbMode === 'atmospheric'
+                          ? 'bg-[var(--accent-mint)] border-[var(--accent-mint)] text-[var(--bg-obsidian)] font-semibold'
+                          : 'bg-[var(--bg-console)] border-[var(--border-grid)] text-[var(--text-muted)] hover:text-[var(--text-primary)]'
+                      }`}
+                    >
+                      Atmospheric
+                    </button>
+                  </div>
+                </div>
+
+                {/* Atmospheric Flow Granular Wind Layer */}
+                <div className="border border-[var(--border-grid)] bg-[var(--bg-obsidian)] p-2.5 flex flex-col justify-between gap-1.5">
+                  <div className="flex items-center justify-between text-[11px] font-mono-tabular">
+                    <span className="text-[var(--text-muted)] flex items-center gap-1.5">
+                      <Wind className="w-3.5 h-3.5 text-[var(--accent-mint)]" aria-hidden="true" />
+                      <span>ATMOS FLOW</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleToggleAtmosphericFlow}
+                      aria-pressed={atmosphericFlowEnabled}
+                      title="Toggle Atmospheric Flow granular wind noise-floor (Shortcut: W)"
+                      className={`px-2 py-0.5 text-[10px] font-mono-tabular uppercase border cursor-pointer whitespace-nowrap ${
+                        atmosphericFlowEnabled
+                          ? 'bg-[var(--accent-mint)] border-[var(--accent-mint)] text-[var(--bg-obsidian)] font-semibold'
+                          : 'bg-[var(--bg-console)] border-[var(--border-grid)] text-[var(--text-muted)] hover:text-[var(--text-primary)]'
+                      }`}
+                    >
+                      {atmosphericFlowEnabled ? 'ON' : 'MUTED'}
+                    </button>
+                  </div>
+
+                  <div className="h-1.5 w-full bg-[var(--bg-console)] border border-[var(--border-grid)]">
+                    <div
+                      className={
+                        headingWind?.isHighWindOcean
+                          ? 'h-full bg-[var(--accent-amber)]'
+                          : 'h-full bg-[var(--accent-mint)]'
+                      }
+                      style={{
+                        width: `${
+                          atmosphericFlowEnabled && headingWind
+                            ? Math.round(headingWind.intensity * 100)
+                            : 0
+                        }%`,
+                      }}
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between text-[10px] font-mono-tabular text-[var(--text-muted)] gap-2">
+                    <span className="truncate">
+                      {headingWind ? headingWind.zoneLabel : 'SYNCING WIND...'}
+                    </span>
+                    <span
+                      className={`shrink-0 font-semibold ${
+                        headingWind?.isHighWindOcean
+                          ? 'text-[var(--accent-amber)]'
+                          : 'text-[var(--accent-mint)]'
+                      }`}
+                    >
+                      {headingWind ? `${headingWind.speedMs.toFixed(1)} m/s` : '-- m/s'}
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -904,11 +1229,11 @@ export default function App() {
                       className={`py-1.5 px-2.5 border text-[11px] font-mono-tabular font-semibold cursor-pointer ${
                         isCurrent
                           ? isSep
-                            ? 'bg-[#FB7185] border-[#FB7185] text-[#060B14]'
-                            : 'bg-[#5EEAD4] border-[#5EEAD4] text-[#060B14]'
+                            ? 'bg-[var(--accent-coral)] border-[var(--accent-coral)] text-[var(--bg-obsidian)]'
+                            : 'bg-[var(--accent-mint)] border-[var(--accent-mint)] text-[var(--bg-obsidian)]'
                           : isSep
-                          ? 'bg-[#111D30] border-[#FB7185] text-[#FB7185] hover:bg-[#192841]'
-                          : 'bg-[#111D30] border-[#1A2E44] text-[#F1F5F9] hover:border-[#5EEAD4]'
+                          ? 'bg-[var(--bg-panel)] border-[var(--accent-coral)] text-[var(--accent-coral)] hover:opacity-85'
+                          : 'bg-[var(--bg-panel)] border-[var(--border-grid)] text-[var(--text-primary)] hover:border-[var(--accent-mint)]'
                       }`}
                     >
                       {bm.label}
@@ -916,7 +1241,7 @@ export default function App() {
                   );
                 })}
               </div>
-              <p className="text-xs text-[#94A3B8] leading-relaxed">
+              <p className="text-xs text-[var(--text-muted)] leading-relaxed">
                 {getMonthlyClimateBrief(archiveYear, monthIndex)}
               </p>
             </div>
@@ -925,13 +1250,19 @@ export default function App() {
           {/* TABBED SCIENTIFIC CONSOLE */}
           <section
             aria-label="Observatory Reference Console"
-            className="border border-[#1A2E44] bg-[#0B1320] flex flex-col"
+            className="border border-[var(--border-grid)] bg-[var(--bg-console)] flex flex-col"
           >
-            <div className="flex items-center justify-between border-b border-[#1A2E44] bg-[#111D30] px-3">
-              <div className="flex items-center" role="tablist" aria-label="Reference Panels">
+            <div className="flex flex-wrap items-center justify-between border-b border-[var(--border-grid)] bg-[var(--bg-panel)] px-3">
+              <div className="flex flex-wrap items-center" role="tablist" aria-label="Reference Panels">
                 {(
                   [
                     ['log', 'Mission Telemetry Log'],
+                    [
+                      'audio-events',
+                      audioEvents.length > 0
+                        ? `Audio Events (${audioEvents.length})`
+                        : 'Audio Events',
+                    ],
                     ['manual', 'Keyboard & Screen-Reader Manual'],
                     ['specs', 'Cardinal & GIBS Specifications'],
                   ] as Array<[ReferenceTab, string]>
@@ -942,36 +1273,49 @@ export default function App() {
                     role="tab"
                     aria-selected={activeTab === tabKey}
                     onClick={() => setActiveTab(tabKey)}
-                    className={`px-3 py-2 text-xs font-mono-tabular border-r border-[#1A2E44] cursor-pointer whitespace-nowrap ${
+                    className={`px-3 py-2 text-xs font-mono-tabular border-r border-[var(--border-grid)] cursor-pointer whitespace-nowrap ${
                       activeTab === tabKey
-                        ? 'bg-[#060B14] text-[#5EEAD4] font-semibold'
-                        : 'text-[#94A3B8] hover:text-[#F1F5F9]'
+                        ? tabKey === 'audio-events'
+                          ? 'bg-[var(--bg-obsidian)] text-[var(--accent-coral)] font-semibold'
+                          : 'bg-[var(--bg-obsidian)] text-[var(--accent-mint)] font-semibold'
+                        : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
                     }`}
                   >
                     {label}
                   </button>
                 ))}
               </div>
-              <span className="text-[11px] font-mono-tabular text-[#94A3B8] hidden sm:inline">
-                REV #{String(frameRevision).padStart(3, '0')}
-              </span>
+              <div className="flex items-center gap-3 py-1">
+                {activeTab === 'audio-events' && audioEvents.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setAudioEvents([])}
+                    className="text-[11px] font-mono-tabular text-[var(--text-muted)] hover:text-[var(--accent-coral)] cursor-pointer whitespace-nowrap"
+                  >
+                    Clear Events
+                  </button>
+                )}
+                <span className="text-[11px] font-mono-tabular text-[var(--text-muted)] hidden sm:inline">
+                  REV #{String(frameRevision).padStart(3, '0')}
+                </span>
+              </div>
             </div>
 
-            <div className="p-3 bg-[#060B14]">
+            <div className="p-3 bg-[var(--bg-obsidian)]">
               {activeTab === 'log' && (
                 <div className="terminal-window h-36 overflow-y-auto font-mono-tabular text-[11px] leading-relaxed">
                   {logs.map((entry) => (
                     <div key={entry.id} className="flex gap-2">
-                      <span className="text-[#94A3B8] shrink-0">[{entry.timestamp}]</span>
+                      <span className="text-[var(--text-muted)] shrink-0">[{entry.timestamp}]</span>
                       <span
                         className={
                           entry.tone === 'coral'
-                            ? 'text-[#FB7185]'
+                            ? 'text-[var(--accent-coral)]'
                             : entry.tone === 'mint'
-                            ? 'text-[#5EEAD4]'
+                            ? 'text-[var(--accent-mint)]'
                             : entry.tone === 'warn'
-                            ? 'text-[#F59E0B]'
-                            : 'text-[#F1F5F9]'
+                            ? 'text-[var(--accent-amber)]'
+                            : 'text-[var(--text-primary)]'
                         }
                       >
                         {entry.message}
@@ -981,41 +1325,94 @@ export default function App() {
                 </div>
               )}
 
+              {activeTab === 'audio-events' && (
+                <div className="terminal-window h-36 overflow-y-auto font-mono-tabular text-[11px] leading-relaxed">
+                  {audioEvents.length === 0 ? (
+                    <div className="h-full flex flex-col items-start justify-center gap-2 text-[var(--text-muted)]">
+                      <span>
+                        NO 2007 ARCHIVE AUDIO EVENTS DETECTED YET · AUDIOENGINE MONITORS CLIMATE
+                        ANOMALY SPIKES (&ge;{Math.round(AudioEngine.ANOMALY_SPIKE_THRESHOLD * 100)}%) &amp;
+                        HIGH INTENSITY MOTION (&ge;{Math.round(AudioEngine.HIGH_MOTION_THRESHOLD * 100)}%) IN
+                        2007.
+                      </span>
+                      {archiveYear !== 2007 && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            await handleChangeYear(2007);
+                            await handleScrubMonth(9);
+                          }}
+                          className="px-2.5 py-1 border border-[var(--accent-coral)] bg-[var(--bg-panel)] text-[var(--accent-coral)] hover:bg-[var(--accent-coral)] hover:text-[var(--bg-obsidian)] text-xs font-mono-tabular cursor-pointer whitespace-nowrap"
+                        >
+                          Load 2007 Archive (Sep Minimum)
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    audioEvents.map((evt) => (
+                      <div key={evt.id} className="flex flex-wrap gap-x-2 border-b border-[var(--border-grid)]/40 py-0.5">
+                        <span className="text-[var(--text-muted)] shrink-0">[{evt.timestamp}]</span>
+                        <span className="text-[var(--text-primary)] shrink-0">{evt.dateStr}</span>
+                        <span
+                          className={
+                            evt.kind === 'climate_anomaly_spike'
+                              ? 'text-[var(--accent-coral)] font-semibold shrink-0'
+                              : 'text-[var(--accent-mint)] font-semibold shrink-0'
+                          }
+                        >
+                          {evt.kind === 'climate_anomaly_spike' ? 'ANOMALY SPIKE' : 'HIGH MOTION'}
+                        </span>
+                        <span className="text-[var(--text-primary)]">{evt.message}</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+
               {activeTab === 'manual' && (
                 <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-xs">
-                  <div className="flex items-center justify-between border-b border-[#1A2E44] pb-1">
-                    <dt className="font-mono-tabular text-[#5EEAD4]">
-                      <kbd className="border border-[#1A2E44] bg-[#0B1320] px-1.5 py-0.5">
+                  <div className="flex items-center justify-between border-b border-[var(--border-grid)] pb-1">
+                    <dt className="font-mono-tabular text-[var(--accent-mint)]">
+                      <kbd className="border border-[var(--border-grid)] bg-[var(--bg-console)] px-1.5 py-0.5">
                         Space
                       </kbd>{' '}
                       /{' '}
-                      <kbd className="border border-[#1A2E44] bg-[#0B1320] px-1.5 py-0.5">
+                      <kbd className="border border-[var(--border-grid)] bg-[var(--bg-console)] px-1.5 py-0.5">
                         Enter
                       </kbd>
                     </dt>
                     <dd>Toggle Audio & Sequencer</dd>
                   </div>
-                  <div className="flex items-center justify-between border-b border-[#1A2E44] pb-1">
-                    <dt className="font-mono-tabular text-[#5EEAD4]">
-                      <kbd className="border border-[#1A2E44] bg-[#0B1320] px-1.5 py-0.5">←</kbd> /{' '}
-                      <kbd className="border border-[#1A2E44] bg-[#0B1320] px-1.5 py-0.5">→</kbd>
+                  <div className="flex items-center justify-between border-b border-[var(--border-grid)] pb-1">
+                    <dt className="font-mono-tabular text-[var(--accent-mint)]">
+                      <kbd className="border border-[var(--border-grid)] bg-[var(--bg-console)] px-1.5 py-0.5">←</kbd> /{' '}
+                      <kbd className="border border-[var(--border-grid)] bg-[var(--bg-console)] px-1.5 py-0.5">→</kbd>
                     </dt>
-                    <dd>Rotate Head 90° (Shift = 15°)</dd>
+                    <dd>
+                      {panningMode === 'smooth360'
+                        ? 'Smooth Rotate 15° (Shift = 5°)'
+                        : 'Snap Head 90° (Shift = 15°)'}
+                    </dd>
                   </div>
-                  <div className="flex items-center justify-between border-b border-[#1A2E44] pb-1">
-                    <dt className="font-mono-tabular text-[#5EEAD4]">
-                      <kbd className="border border-[#1A2E44] bg-[#0B1320] px-1.5 py-0.5">1</kbd>–
-                      <kbd className="border border-[#1A2E44] bg-[#0B1320] px-1.5 py-0.5">4</kbd>
+                  <div className="flex items-center justify-between border-b border-[var(--border-grid)] pb-1">
+                    <dt className="font-mono-tabular text-[var(--accent-mint)]">
+                      <kbd className="border border-[var(--border-grid)] bg-[var(--bg-console)] px-1.5 py-0.5">1</kbd>–
+                      <kbd className="border border-[var(--border-grid)] bg-[var(--bg-console)] px-1.5 py-0.5">4</kbd>
                     </dt>
                     <dd>Jump N / E / S / W Cardinal</dd>
                   </div>
-                  <div className="flex items-center justify-between border-b border-[#1A2E44] pb-1">
-                    <dt className="font-mono-tabular text-[#5EEAD4]">
-                      <kbd className="border border-[#1A2E44] bg-[#0B1320] px-1.5 py-0.5">H</kbd> /{' '}
-                      <kbd className="border border-[#1A2E44] bg-[#0B1320] px-1.5 py-0.5">M</kbd> /{' '}
-                      <kbd className="border border-[#1A2E44] bg-[#0B1320] px-1.5 py-0.5">A</kbd>
+                  <div className="flex items-center justify-between border-b border-[var(--border-grid)] pb-1">
+                    <dt className="font-mono-tabular text-[var(--accent-mint)]">
+                      <kbd className="border border-[var(--border-grid)] bg-[var(--bg-console)] px-1.5 py-0.5">H</kbd> /{' '}
+                      <kbd className="border border-[var(--border-grid)] bg-[var(--bg-console)] px-1.5 py-0.5">M</kbd> /{' '}
+                      <kbd className="border border-[var(--border-grid)] bg-[var(--bg-console)] px-1.5 py-0.5">A</kbd> /{' '}
+                      <kbd className="border border-[var(--border-grid)] bg-[var(--bg-console)] px-1.5 py-0.5">T</kbd> /{' '}
+                      <kbd className="border border-[var(--border-grid)] bg-[var(--bg-console)] px-1.5 py-0.5">R</kbd> /{' '}
+                      <kbd className="border border-[var(--border-grid)] bg-[var(--bg-console)] px-1.5 py-0.5">P</kbd> /{' '}
+                      <kbd className="border border-[var(--border-grid)] bg-[var(--bg-console)] px-1.5 py-0.5">W</kbd> /{' '}
+                      <kbd className="border border-[var(--border-grid)] bg-[var(--bg-console)] px-1.5 py-0.5">N</kbd>
                     </dt>
-                    <dd>Status / Toggle Globe / Anomaly Heatmap</dd>
+                    <dd>Status / Globe / Heatmap / Solar / Reverb / Pan / Wind / Night</dd>
                   </div>
                 </dl>
               )}
@@ -1024,7 +1421,7 @@ export default function App() {
                 <div className="overflow-x-auto">
                   <table className="w-full text-left border-collapse font-mono-tabular text-[11px]">
                     <thead>
-                      <tr className="border-b border-[#1A2E44] text-[#94A3B8]">
+                      <tr className="border-b border-[var(--border-grid)] text-[var(--text-muted)]">
                         <th className="py-1 pr-3">HEADING</th>
                         <th className="py-1 pr-3">PHENOMENON</th>
                         <th className="py-1 pr-3">NASA GIBS LAYER</th>
@@ -1038,8 +1435,8 @@ export default function App() {
                         return (
                           <tr
                             key={key}
-                            className={`border-b border-[#1A2E44]/60 ${
-                              key === activeLayerKey ? 'text-[#5EEAD4]' : 'text-[#F1F5F9]'
+                            className={`border-b border-[var(--border-grid)]/60 ${
+                              key === activeLayerKey ? 'text-[var(--accent-mint)]' : 'text-[var(--text-primary)]'
                             }`}
                           >
                             <td className="py-1.5 pr-3">
@@ -1065,48 +1462,54 @@ export default function App() {
         {/* RIGHT COLUMN: ACOUSTIC TELEMETRY, COMPASS HUD, 6-SIGNAL MATRIX & TEMPORAL CHART */}
         <aside
           aria-label="Binaural Acoustics and 6-Signal Telemetry"
-          className="p-4 flex flex-col gap-4 bg-[#0B1320]"
+          className="p-4 flex flex-col gap-4 bg-[var(--bg-console)]"
         >
           <AudioSpectrumBar
             analyser={audioEngineRef.current?.getAnalyserNode() ?? null}
             isPlaying={isPlaying}
             isTestingSpatial={isTestingSpatial}
+            nightMode={observatoryNightMode}
           />
 
           <RadarCompassHud
             listenerAngle={listenerAngle}
             activeLayerKey={activeLayerKey}
             vectors={vectors}
+            panningMode={panningMode}
+            windTelemetry={headingWind}
+            atmosphericFlowEnabled={atmosphericFlowEnabled}
+            nightMode={observatoryNightMode}
             onChangeHeading={(deg) => handleSetHeading(deg)}
             onSelectLayer={handleSelectLayer}
+            onChangePanningMode={handlePanningModeChange}
           />
 
           <section
             aria-label="6-Signal Feature Vector Matrix"
-            className="border border-[#1A2E44] bg-[#0B1320] flex flex-col"
+            className="border border-[var(--border-grid)] bg-[var(--bg-console)] flex flex-col"
           >
-            <div className="flex items-center justify-between px-3 py-2 border-b border-[#1A2E44] bg-[#111D30]">
-              <h2 className="text-xs font-semibold uppercase tracking-wider text-[#F1F5F9]">
+            <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--border-grid)] bg-[var(--bg-panel)]">
+              <h2 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-primary)]">
                 6-Signal Acoustic Vector
               </h2>
-              <span className="text-[11px] font-mono-tabular text-[#5EEAD4]">
+              <span className="text-[11px] font-mono-tabular text-[var(--accent-mint)]">
                 {activeLayer.cardinal.toUpperCase()} · {activePitchHz.toFixed(0)} HZ
               </span>
             </div>
 
-            <div className="p-3 grid grid-cols-1 sm:grid-cols-2 gap-2 bg-[#060B14]">
+            <div className="p-3 grid grid-cols-1 sm:grid-cols-2 gap-2 bg-[var(--bg-obsidian)]">
               {signalRows.map((row) => {
                 const pct = Math.round(row.value * 100);
                 return (
-                  <div key={row.label} className="border border-[#1A2E44] bg-[#0B1320] p-2">
+                  <div key={row.label} className="border border-[var(--border-grid)] bg-[var(--bg-console)] p-2">
                     <div className="flex items-center justify-between text-xs font-mono-tabular">
-                      <span className="text-[#F1F5F9]">{row.label}</span>
-                      <span className={row.isCoral ? 'text-[#FB7185] font-semibold' : 'text-[#5EEAD4] font-semibold'}>
+                      <span className="text-[var(--text-primary)]">{row.label}</span>
+                      <span className={row.isCoral ? 'text-[var(--accent-coral)] font-semibold' : 'text-[var(--accent-mint)] font-semibold'}>
                         {row.value.toFixed(3)}
                       </span>
                     </div>
                     <div
-                      className="mt-1.5 h-1.5 w-full bg-[#060B14] border border-[#1A2E44]"
+                      className="mt-1.5 h-1.5 w-full bg-[var(--bg-obsidian)] border border-[var(--border-grid)]"
                       role="progressbar"
                       aria-label={row.label}
                       aria-valuenow={pct}
@@ -1114,11 +1517,11 @@ export default function App() {
                       aria-valuemax={100}
                     >
                       <div
-                        className={row.isCoral ? 'h-full bg-[#FB7185]' : 'h-full bg-[#5EEAD4]'}
+                        className={row.isCoral ? 'h-full bg-[var(--accent-coral)]' : 'h-full bg-[var(--accent-mint)]'}
                         style={{ width: `${pct}%` }}
                       />
                     </div>
-                    <div className="mt-1 text-[10px] font-mono-tabular text-[#94A3B8]">
+                    <div className="mt-1 text-[10px] font-mono-tabular text-[var(--text-muted)]">
                       {row.target}
                     </div>
                   </div>
@@ -1131,13 +1534,14 @@ export default function App() {
             history={history}
             archiveYear={archiveYear}
             maxMonths={maxMonth}
+            nightMode={observatoryNightMode}
           />
         </aside>
       </main>
 
       <footer
         role="contentinfo"
-        className="border-t border-[#1A2E44] bg-[#0B1320] px-4 py-2 flex flex-wrap items-center justify-between gap-2 text-xs font-mono-tabular text-[#94A3B8]"
+        className="border-t border-[var(--border-grid)] bg-[var(--bg-console)] px-4 py-2 flex flex-wrap items-center justify-between gap-2 text-xs font-mono-tabular text-[var(--text-muted)]"
       >
         <span>ORTHOGRAPHIC 3D + EPSG:4326 · WEB AUDIO HRTF BINAURAL ENGINE</span>
         <span>LIVE NASA GIBS 2025–2026 & 2007 ARCHIVE · WCAG AAA KEYBOARD ACCESSIBLE</span>
@@ -1157,6 +1561,7 @@ export default function App() {
         speechEnabled={speechEnabled}
         isPlaying={isPlaying}
         isTestingSpatial={isTestingSpatial}
+        nightMode={observatoryNightMode}
         onClose={handleCloseOnboarding}
         onSelectLayer={handleSelectLayer}
         onRotateStep={(deltaDeg) => handleSetHeading(listenerAngle + deltaDeg)}

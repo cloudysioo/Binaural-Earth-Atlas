@@ -133,6 +133,20 @@ export interface LogEntry {
   tone: 'info' | 'mint' | 'coral' | 'warn';
 }
 
+export type AudioEventKind = 'climate_anomaly_spike' | 'high_intensity_motion';
+
+export interface AudioEventEntry {
+  id: string;
+  timestamp: string;
+  dateStr: string;
+  layerKey: LayerKey;
+  kind: AudioEventKind;
+  value: number;
+  threshold: number;
+  frequencyHz: number;
+  message: string;
+}
+
 export interface SeasonalBenchmark {
   monthIndex: number;
   label: string;

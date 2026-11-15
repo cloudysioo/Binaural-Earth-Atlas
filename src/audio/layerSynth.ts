@@ -83,29 +83,60 @@ export class LayerSynth {
   }
 
   /**
-   * Smoothly scales focus emphasis across a continuous 360-degree heading:
-   * 1.00x directly ahead (0 deg angular error), decaying smoothly to 0.45x behind.
+   * Smoothly scales focus emphasis across a continuous 360-degree heading using
+   * a 500ms exponential crossfade (1.00x directly ahead, 0.45x behind).
    */
-  public setAngularFocus(angularDeltaDeg: number): void {
+  public setAngularFocus(angularDeltaDeg: number, crossfadeDurationSec = 0.5): void {
     const rad = (angularDeltaDeg * Math.PI) / 180;
     const forwardAlignment = Math.max(0, Math.cos(rad));
-    const target = 0.45 + 0.55 * forwardAlignment;
-    this.focusGain.gain.setTargetAtTime(target, this.ctx.currentTime, 0.07);
+    const target = Math.max(0.001, 0.45 + 0.55 * forwardAlignment);
+    const duration = Math.max(0.01, crossfadeDurationSec);
+
+    const now = this.ctx.currentTime;
+    const gainParam = this.focusGain.gain;
+
+    if (typeof gainParam.cancelAndHoldAtTime === 'function') {
+      gainParam.cancelAndHoldAtTime(now);
+      if (gainParam.value <= 0.001) {
+        gainParam.setValueAtTime(0.001, now);
+      }
+    } else {
+      gainParam.cancelScheduledValues(now);
+      gainParam.setValueAtTime(Math.max(0.001, gainParam.value), now);
+    }
+
+    gainParam.exponentialRampToValueAtTime(target, now + duration);
+  }
+
+  /**
+   * Continuously tracks focus emphasis at animation-frame cadence during Full 360°
+   * Smooth Panning without restarting discrete ramp envelopes on every degree step.
+   */
+  public setContinuousAngularFocus(angularDeltaDeg: number, timeConstantSec = 0.025): void {
+    const rad = (angularDeltaDeg * Math.PI) / 180;
+    const forwardAlignment = Math.max(0, Math.cos(rad));
+    const target = Math.max(0.001, 0.45 + 0.55 * forwardAlignment);
+    const now = this.ctx.currentTime;
+    const gainParam = this.focusGain.gain;
+    gainParam.setTargetAtTime(target, now, Math.max(0.008, timeConstantSec));
   }
 
   public updateFromFeatures(
     features: FeatureVector,
     cadenceMs: number,
-    scaleMode: ScaleMode = 'pentatonic'
+    scaleMode: ScaleMode = 'pentatonic',
+    dopplerMultiplier = 1.0
   ): number {
     const now = this.ctx.currentTime;
     const { frequency } = quantizeToPentatonic(features.hue, features.brightness, scaleMode);
-    this.currentFreq = frequency;
+    const clampedDoppler = Math.max(0.8, Math.min(1.5, dopplerMultiplier));
+    const shiftedFrequency = frequency * clampedDoppler;
+    this.currentFreq = shiftedFrequency;
 
-    this.osc1.frequency.setTargetAtTime(frequency, now, 0.06);
+    this.osc1.frequency.setTargetAtTime(shiftedFrequency, now, 0.06);
 
     const detuneRatio = 1 + 0.015 + features.climateAnomaly * 0.085;
-    this.osc2.frequency.setTargetAtTime(frequency * detuneRatio, now, 0.06);
+    this.osc2.frequency.setTargetAtTime(shiftedFrequency * detuneRatio, now, 0.06);
     this.osc2Gain.gain.setTargetAtTime(features.climateAnomaly * 0.28, now, 0.08);
 
     const cutoff = 400 + features.saturation * 5600;

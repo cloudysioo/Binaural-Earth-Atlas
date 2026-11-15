@@ -1,8 +1,10 @@
 import { useEffect } from 'react';
+import { SpatialPanningMode } from '../audio/audioEngine';
 import { LayerKey } from '../types/bea';
 
 interface KeyboardControlHandlers {
   disabled?: boolean;
+  panningMode?: SpatialPanningMode;
   onTogglePlay: () => void;
   onRotateLeft: (stepDeg: number) => void;
   onRotateRight: (stepDeg: number) => void;
@@ -10,16 +12,26 @@ interface KeyboardControlHandlers {
   onRequestStatus: () => void;
   onToggleProjection: () => void;
   onToggleAnomalyHeatmap: () => void;
+  onToggleSolarTerminator?: () => void;
+  onToggleReverb?: () => void;
+  onTogglePanningMode?: () => void;
+  onToggleAtmosphericFlow?: () => void;
+  onToggleNightMode?: () => void;
 }
 
 /**
  * Global Accessible Keyboard Bus:
  * - Space / Enter: Toggle Sequencer Sonification
- * - ArrowLeft / ArrowRight: Rotate virtual head 90 degrees CCW / CW (Shift = 15 degrees fine)
+ * - ArrowLeft / ArrowRight: Rotate head (15° / 5° fine in 360° Smooth mode; 90° / 15° in Cardinal Snap)
  * - 1, 2, 3, 4: Direct cardinal jump (North, East, South, West)
  * - H: Speak current heading, active layer, and observation date
  * - M: Toggle 3D Globe / Plate Carree Map projection
  * - A: Toggle D3 Climate Anomaly Heatmap overlay
+ * - T: Toggle real-time UTC Solar Terminators overlay
+ * - R: Toggle Environment Reverb (Vacuum/Deep Space vs Planetary Atmospheric)
+ * - P: Toggle Spatial Panning Mode (Full 360° Smooth vs Cardinal Snap)
+ * - W: Toggle Atmospheric Flow (Granular Wind Noise-Floor)
+ * - N: Toggle Observatory Night Mode (Deep Red Dark-Adaptation)
  */
 export function useKeyboardControls(handlers: KeyboardControlHandlers): void {
   useEffect(() => {
@@ -32,7 +44,8 @@ export function useKeyboardControls(handlers: KeyboardControlHandlers): void {
       if (tag === 'input' && inputType !== 'range') return;
       if (tag === 'textarea' || tag === 'select') return;
 
-      const stepDeg = e.shiftKey ? 15 : 90;
+      const isSmooth360 = (handlers.panningMode ?? 'smooth360') === 'smooth360';
+      const stepDeg = isSmooth360 ? (e.shiftKey ? 5 : 15) : e.shiftKey ? 15 : 90;
 
       if (e.key === 'ArrowLeft') {
         if (tag === 'input' && inputType === 'range') return;
@@ -84,6 +97,36 @@ export function useKeyboardControls(handlers: KeyboardControlHandlers): void {
       if (e.key === 'a' || e.key === 'A') {
         e.preventDefault();
         handlers.onToggleAnomalyHeatmap();
+        return;
+      }
+
+      if (e.key === 't' || e.key === 'T') {
+        e.preventDefault();
+        handlers.onToggleSolarTerminator?.();
+        return;
+      }
+
+      if (e.key === 'r' || e.key === 'R') {
+        e.preventDefault();
+        handlers.onToggleReverb?.();
+        return;
+      }
+
+      if (e.key === 'p' || e.key === 'P') {
+        e.preventDefault();
+        handlers.onTogglePanningMode?.();
+        return;
+      }
+
+      if (e.key === 'w' || e.key === 'W') {
+        e.preventDefault();
+        handlers.onToggleAtmosphericFlow?.();
+        return;
+      }
+
+      if (e.key === 'n' || e.key === 'N') {
+        e.preventDefault();
+        handlers.onToggleNightMode?.();
         return;
       }
 
