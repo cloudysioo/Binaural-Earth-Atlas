@@ -95,24 +95,26 @@ export const AudioSpectrumBar: React.FC<AudioSpectrumBarProps> = ({
   }, [analyser, isPlaying, isTestingSpatial, nightMode]);
 
   return (
-    <div className="border border-[var(--border-grid)] bg-[var(--bg-obsidian)] p-2">
-      <div className="flex items-center justify-between text-[11px] font-mono-tabular text-[var(--text-muted)] mb-1">
-        <span>LIVE BINAURAL OUTPUT OSCILLOSCOPE</span>
+    <div className="border border-[var(--border-strong)] bg-[var(--bg-console)] p-2.5">
+      <div className="flex items-center justify-between text-xs font-mono-tabular mb-1.5">
+        <span className="font-semibold text-[var(--text-primary)]">
+          LIVE BINAURAL OUTPUT OSCILLOSCOPE
+        </span>
         <span
           className={
             isPlaying || isTestingSpatial
-              ? 'text-[var(--accent-mint)]'
+              ? 'text-[var(--accent-mint)] font-semibold'
               : 'text-[var(--text-muted)]'
           }
         >
-          {isTestingSpatial ? 'CALIBRATION SIGNAL' : isPlaying ? 'HRTF STREAM' : 'SILENT'}
+          {isTestingSpatial ? 'CALIBRATION SIGNAL' : isPlaying ? 'HRTF STREAM' : 'STANDBY'}
         </span>
       </div>
       <canvas
         ref={canvasRef}
         width={420}
         height={58}
-        className="w-full h-[58px] block border border-[var(--border-grid)]"
+        className="w-full h-[58px] block border border-[var(--border-grid)] bg-[var(--bg-obsidian)]"
         aria-label="Live binaural audio output waveform and harmonic spectrum"
       />
     </div>

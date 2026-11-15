@@ -13,8 +13,12 @@ interface KeyboardControlHandlers {
   onToggleProjection: () => void;
   onToggleAnomalyHeatmap: () => void;
   onToggleSolarTerminator?: () => void;
+  onToggleWindFlow?: () => void;
+  onToggleStormRadar?: () => void;
   onToggleReverb?: () => void;
   onTogglePanningMode?: () => void;
+  onToggleAutoRotate?: () => void;
+  onToggleMagneticSnap?: () => void;
   onToggleAtmosphericFlow?: () => void;
   onToggleNightMode?: () => void;
 }
@@ -28,8 +32,12 @@ interface KeyboardControlHandlers {
  * - M: Toggle 3D Globe / Plate Carree Map projection
  * - A: Toggle D3 Climate Anomaly Heatmap overlay
  * - T: Toggle real-time UTC Solar Terminators overlay
+ * - V: Toggle animated Wind Flow streamlines overlay on Globe & Map
+ * - S: Toggle animated D3 Storm Radar pressure-contour overlay
  * - R: Toggle Environment Reverb (Vacuum/Deep Space vs Planetary Atmospheric)
  * - P: Toggle Spatial Panning Mode (Full 360° Smooth vs Cardinal Snap)
+ * - O: Toggle Radar Compass Auto-Rotate (5°/s passive 360° scan)
+ * - G: Toggle Magnetic Snap to High-Intensity Climate Anomalies
  * - W: Toggle Atmospheric Flow (Granular Wind Noise-Floor)
  * - N: Toggle Observatory Night Mode (Deep Red Dark-Adaptation)
  */
@@ -106,6 +114,18 @@ export function useKeyboardControls(handlers: KeyboardControlHandlers): void {
         return;
       }
 
+      if (e.key === 'v' || e.key === 'V') {
+        e.preventDefault();
+        handlers.onToggleWindFlow?.();
+        return;
+      }
+
+      if (e.key === 's' || e.key === 'S') {
+        e.preventDefault();
+        handlers.onToggleStormRadar?.();
+        return;
+      }
+
       if (e.key === 'r' || e.key === 'R') {
         e.preventDefault();
         handlers.onToggleReverb?.();
@@ -115,6 +135,18 @@ export function useKeyboardControls(handlers: KeyboardControlHandlers): void {
       if (e.key === 'p' || e.key === 'P') {
         e.preventDefault();
         handlers.onTogglePanningMode?.();
+        return;
+      }
+
+      if (e.key === 'o' || e.key === 'O') {
+        e.preventDefault();
+        handlers.onToggleAutoRotate?.();
+        return;
+      }
+
+      if (e.key === 'g' || e.key === 'G') {
+        e.preventDefault();
+        handlers.onToggleMagneticSnap?.();
         return;
       }
 

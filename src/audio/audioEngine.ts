@@ -10,19 +10,26 @@ import {
   LayerKey,
   NASA_GIBS_LAYERS,
 } from '../types/bea';
+import { SolarActivityTelemetry } from '../analysis/solarActivity';
 import { AtmosphericFlowSynth } from './atmosphericFlowSynth';
 import { LayerSynth } from './layerSynth';
 import { quantizeToPentatonic, ScaleMode } from './scales';
+import { SolarChimeSynth } from './solarChimeSynth';
+import { SolarFlareSynth } from './solarFlareSynth';
 import { SpatialPanner } from './spatialPanner';
 
 export type EnvironmentReverbMode = 'vacuum' | 'atmospheric';
 export type SpatialPanningMode = 'cardinal' | 'smooth360';
+
+export type DopplerDirection = 'up' | 'down' | 'flat';
 
 export interface DopplerShiftTelemetry {
   beta: number;
   multiplier: number;
   shiftPct: number;
   cents: number;
+  direction: DopplerDirection;
+  motionDelta: number;
 }
 
 const NEUTRAL_DOPPLER: DopplerShiftTelemetry = {
@@ -30,6 +37,8 @@ const NEUTRAL_DOPPLER: DopplerShiftTelemetry = {
   multiplier: 1,
   shiftPct: 0,
   cents: 0,
+  direction: 'flat',
+  motionDelta: 0,
 };
 
 /**
@@ -81,6 +90,11 @@ export class AudioEngine {
   public static readonly HEADING_CROSSFADE_SEC = 0.5;
   public static readonly ANOMALY_SPIKE_THRESHOLD = 0.44;
   public static readonly HIGH_MOTION_THRESHOLD = 0.48;
+  public static readonly MAGNETIC_ANOMALY_THRESHOLD = 0.36;
+  public static readonly SOLAR_ACTIVITY_THRESHOLD = 0.68;
+  public static readonly SOLAR_WIND_FLARE_THRESHOLD_KMS = 680;
+  public static readonly SOLAR_WIND_SPIKE_DELTA_KMS = 95;
+  public static readonly DOPPLER_EMA_ALPHA = 0.28;
   private ctx: AudioContext | null = null;
   private spatialBus: GainNode | null = null;
   private dryGain: GainNode | null = null;
@@ -88,14 +102,25 @@ export class AudioEngine {
   private reverbToneFilter: BiquadFilterNode | null = null;
   private wetGain: GainNode | null = null;
   private compressor: DynamicsCompressorNode | null = null;
+  private narrationDuckGain: GainNode | null = null;
   private analyser: AnalyserNode | null = null;
   private masterGain: GainNode | null = null;
   private spatialPanner: SpatialPanner | null = null;
   private synths: Record<LayerKey, LayerSynth> | null = null;
   private atmosphericFlow: AtmosphericFlowSynth | null = null;
+  private solarChime: SolarChimeSynth | null = null;
+  private solarFlareSynth: SolarFlareSynth | null = null;
   private windField: WindVectorField | null = null;
   private atmosphericFlowEnabled = true;
-  private masterVolume = 0.72;
+  private windTurbulenceMultiplier = 1.0;
+  private dopplerSensitivity = 1.0;
+  private magneticSnapEnabled = false;
+  private latestVectors: Record<LayerKey, FeatureVector> | null = null;
+  private lastMagneticDetentKey: LayerKey | null = null;
+  private lastMagneticDetentMs = 0;
+  private prevHeadingForAnomalyCross: number | null = null;
+  private isNarrationActive = false;
+  private masterVolume = 0.55;
   private activeHeading = 0;
   private scaleMode: ScaleMode = 'pentatonic';
   private reverbMode: EnvironmentReverbMode = 'vacuum';
@@ -104,6 +129,15 @@ export class AudioEngine {
   private testTimers: number[] = [];
   private audioEventListener: ((event: AudioEventEntry) => void) | null = null;
   private prev2007Anomalies: Partial<Record<LayerKey, number>> = {};
+  private lastSolarTriggerMs = 0;
+  private prevSolarIntensity = 0;
+  private prevSolarWindKms: number | null = null;
+  private lastSolarFlareMs = 0;
+  private prevMotionByLayer: Partial<Record<LayerKey, number>> = {};
+  private currentFrameMotionByLayer: Partial<Record<LayerKey, number>> = {};
+  private lastMotionFrameDate: string | null = null;
+  private smoothedDopplerMultiplier: Partial<Record<LayerKey, number>> = {};
+  private lastDopplerStepKey: string | null = null;
   private lastDopplerByLayer: Record<LayerKey, DopplerShiftTelemetry> = {
     north: { ...NEUTRAL_DOPPLER },
     east: { ...NEUTRAL_DOPPLER },
@@ -117,27 +151,127 @@ export class AudioEngine {
 
   public resetArchiveEventHistory(): void {
     this.prev2007Anomalies = {};
+    this.prevMotionByLayer = {};
+    this.currentFrameMotionByLayer = {};
+    this.lastMotionFrameDate = null;
+    this.smoothedDopplerMultiplier = {};
+    this.lastDopplerStepKey = null;
+    this.lastDopplerByLayer = {
+      north: { ...NEUTRAL_DOPPLER },
+      east: { ...NEUTRAL_DOPPLER },
+      south: { ...NEUTRAL_DOPPLER },
+      west: { ...NEUTRAL_DOPPLER },
+    };
+  }
+
+  private commitMotionFrame(vectors: Record<LayerKey, FeatureVector>, dateStr?: string): void {
+    if (!dateStr || dateStr === this.lastMotionFrameDate) return;
+    this.prevMotionByLayer = { ...this.currentFrameMotionByLayer };
+    for (const key of LAYER_ORDER) {
+      this.currentFrameMotionByLayer[key] = vectors[key].motion;
+    }
+    this.lastMotionFrameDate = dateStr;
   }
 
   /**
-   * Computes classical approaching-source Doppler pitch shift f' = f / (1 - v/c)
-   * combining the layer's Frame Motion velocity and sequencer cadence speedup.
+   * Computes signed Doppler pitch shift f' = f / (1 - v/c) combining each
+   * layer's Frame Motion velocity, frame-to-frame acceleration/deceleration delta,
+   * and sequencer cadence speed, scales deviation by dopplerSensitivity [0..3],
+   * and smooths the resulting multiplier through an EMA filter.
    */
   public static computeDopplerShift(
     frameMotion: number,
-    cadenceMs: number
+    cadenceMs: number,
+    previousMotion?: number,
+    previousSmoothedMultiplier?: number,
+    emaAlpha = AudioEngine.DOPPLER_EMA_ALPHA,
+    sensitivity = 1.0
   ): DopplerShiftTelemetry {
     const clampedMotion = Math.max(0, Math.min(1, Number.isFinite(frameMotion) ? frameMotion : 0));
+    const clampedPrev =
+      previousMotion !== undefined && Number.isFinite(previousMotion)
+        ? Math.max(0, Math.min(1, previousMotion))
+        : undefined;
+    const motionDelta = clampedPrev !== undefined ? clampedMotion - clampedPrev : 0;
+
     const sequencerSpeed = Math.max(
       0,
       Math.min(1, (2500 - (Number.isFinite(cadenceMs) ? cadenceMs : 2500)) / 1000)
     );
-    const velocityNorm = Math.max(0, Math.min(1, 0.55 * clampedMotion + 0.45 * sequencerSpeed));
-    const beta = 0.125 * velocityNorm;
-    const multiplier = 1 / (1 - beta);
+    const motionBaseline =
+      clampedMotion >= 0.22 ? (clampedMotion - 0.22) / 0.78 : (clampedMotion - 0.22) / 0.22;
+    const velocitySigned = Math.max(
+      -0.85,
+      Math.min(1, 0.5 * motionBaseline + 0.38 * sequencerSpeed + 0.35 * motionDelta)
+    );
+    const beta = Math.max(-0.1, Math.min(0.125, 0.125 * velocitySigned));
+    const rawBaseMultiplier = 1 / (1 - beta);
+    const clampedSens = Math.max(0, Math.min(3, Number.isFinite(sensitivity) ? sensitivity : 1.0));
+    const rawMultiplier = Math.max(
+      0.55,
+      Math.min(1.85, 1 + (rawBaseMultiplier - 1) * clampedSens)
+    );
+
+    const hasPrevEma =
+      previousSmoothedMultiplier !== undefined && Number.isFinite(previousSmoothedMultiplier);
+    const alpha = Math.max(0.05, Math.min(1, emaAlpha));
+    const multiplier = hasPrevEma
+      ? alpha * rawMultiplier + (1 - alpha) * previousSmoothedMultiplier
+      : rawMultiplier;
+
     const shiftPct = (multiplier - 1) * 100;
     const cents = Math.round(1200 * Math.log2(multiplier));
-    return { beta, multiplier, shiftPct, cents };
+    const direction: DopplerDirection =
+      shiftPct > 0.15 ? 'up' : shiftPct < -0.15 ? 'down' : 'flat';
+    return { beta, multiplier, shiftPct, cents, direction, motionDelta };
+  }
+
+  public getDopplerSensitivity(): number {
+    return this.dopplerSensitivity;
+  }
+
+  public setDopplerSensitivity(sensitivity: number): void {
+    const clamped = Math.max(0, Math.min(3, Number.isFinite(sensitivity) ? sensitivity : 1.0));
+    this.dopplerSensitivity = clamped;
+    this.lastDopplerStepKey = null;
+  }
+
+  /**
+   * Computes and caches EMA-smoothed Doppler telemetry for all four cardinal layers,
+   * deduplicating by (dateStr, cadenceMs, dopplerSensitivity) so repeated UI/audio
+   * queries within the same observation tick do not double-advance the filter.
+   */
+  public computeFilteredDopplerMap(
+    vectors: Record<LayerKey, FeatureVector>,
+    cadenceMs: number,
+    dateStr?: string
+  ): Record<LayerKey, DopplerShiftTelemetry> {
+    this.latestVectors = vectors;
+    this.commitMotionFrame(vectors, dateStr);
+    const stepKey = `${dateStr ?? this.lastMotionFrameDate ?? 'live'}:${Math.round(
+      cadenceMs
+    )}:${this.dopplerSensitivity.toFixed(2)}`;
+    if (stepKey === this.lastDopplerStepKey && this.smoothedDopplerMultiplier.north !== undefined) {
+      return this.lastDopplerByLayer;
+    }
+
+    const nextMap = {} as Record<LayerKey, DopplerShiftTelemetry>;
+    for (const key of LAYER_ORDER) {
+      const filtered = AudioEngine.computeDopplerShift(
+        vectors[key].motion,
+        cadenceMs,
+        this.prevMotionByLayer[key],
+        this.smoothedDopplerMultiplier[key],
+        AudioEngine.DOPPLER_EMA_ALPHA,
+        this.dopplerSensitivity
+      );
+      this.smoothedDopplerMultiplier[key] = filtered.multiplier;
+      nextMap[key] = filtered;
+    }
+
+    this.lastDopplerByLayer = nextMap;
+    this.lastDopplerStepKey = stepKey;
+    return this.lastDopplerByLayer;
   }
 
   public getDopplerTelemetry(): Record<LayerKey, DopplerShiftTelemetry> {
@@ -180,6 +314,160 @@ export class AudioEngine {
     this.setHeading(this.activeHeading, AudioEngine.HEADING_CROSSFADE_SEC);
   }
 
+  public getMagneticSnapEnabled(): boolean {
+    return this.magneticSnapEnabled;
+  }
+
+  public setMagneticSnapEnabled(enabled: boolean): void {
+    this.magneticSnapEnabled = enabled;
+    if (!enabled) {
+      this.lastMagneticDetentKey = null;
+      return;
+    }
+    if (this.latestVectors) {
+      this.setHeading(this.activeHeading, 0.16);
+    }
+  }
+
+  public setLatestVectors(vectors: Record<LayerKey, FeatureVector>): void {
+    this.latestVectors = vectors;
+  }
+
+  /**
+   * Finds the nearest high-intensity climate anomaly layer azimuth (or next/previous
+   * high-anomaly sector when directionStepHint is supplied) so Magnetic Snap aligns
+   * listener heading cleanly with active planetary anomaly centers.
+   */
+  public resolveMagneticSnap(
+    rawHeadingDeg: number,
+    vectors: Record<LayerKey, FeatureVector>,
+    directionStepHint?: -1 | 1
+  ): {
+    snappedAngle: number;
+    targetKey: LayerKey;
+    anomalyIntensity: number;
+  } {
+    const normalized = ((rawHeadingDeg % 360) + 360) % 360;
+    const allEntries = LAYER_ORDER.map((key) => ({
+      key,
+      azimuth: NASA_GIBS_LAYERS[key].azimuth,
+      anomaly: vectors[key]?.climateAnomaly ?? 0,
+    }));
+
+    const highAnomalies = allEntries.filter(
+      (item) => item.anomaly >= AudioEngine.MAGNETIC_ANOMALY_THRESHOLD
+    );
+    const candidates =
+      highAnomalies.length > 0
+        ? highAnomalies
+        : [...allEntries].sort((a, b) => b.anomaly - a.anomaly).slice(0, 2);
+
+    if (directionStepHint && candidates.length > 1) {
+      const sorted = candidates
+        .map((c) => {
+          const forwardDelta = (((c.azimuth - normalized) % 360) + 360) % 360;
+          const signedStep =
+            directionStepHint > 0
+              ? forwardDelta === 0
+                ? 360
+                : forwardDelta
+              : forwardDelta === 0
+              ? 360
+              : 360 - forwardDelta;
+          return { ...c, signedStep };
+        })
+        .sort((a, b) => a.signedStep - b.signedStep);
+      const chosen = sorted[0];
+      return {
+        snappedAngle: chosen.azimuth,
+        targetKey: chosen.key,
+        anomalyIntensity: chosen.anomaly,
+      };
+    }
+
+    let best = candidates[0];
+    let bestDist = Infinity;
+    for (const c of candidates) {
+      const rawDiff = Math.abs(normalized - c.azimuth);
+      const angularDist = Math.min(rawDiff, 360 - rawDiff);
+      if (
+        angularDist < bestDist - 0.5 ||
+        (Math.abs(angularDist - bestDist) <= 0.5 && c.anomaly > best.anomaly)
+      ) {
+        best = c;
+        bestDist = angularDist;
+      }
+    }
+
+    return {
+      snappedAngle: best.azimuth,
+      targetKey: best.key,
+      anomalyIntensity: best.anomaly,
+    };
+  }
+
+  /**
+   * Plays a crisp 42ms tactile haptic-like magnetic detent pulse (sub-bass thump +
+   * dry mechanical click) when crossing or locking onto an anomaly center.
+   */
+  public triggerMagneticDetentHaptic(anomalyIntensity = 0.65): void {
+    if (!this.ctx || this.ctx.state !== 'running' || !this.compressor) return;
+    const nowMs = Date.now();
+    if (nowMs - this.lastMagneticDetentMs < 110) return;
+    this.lastMagneticDetentMs = nowMs;
+
+    const now = this.ctx.currentTime;
+    const clampedIntensity = Math.max(0.2, Math.min(1, anomalyIntensity));
+
+    // 1. Sub-bass LRA-style tactile thump (140Hz -> 48Hz over 40ms)
+    const thumpOsc = this.ctx.createOscillator();
+    thumpOsc.type = 'sine';
+    thumpOsc.frequency.setValueAtTime(142, now);
+    thumpOsc.frequency.exponentialRampToValueAtTime(48, now + 0.04);
+
+    const thumpGain = this.ctx.createGain();
+    const thumpPeak = 0.24 + clampedIntensity * 0.22;
+    thumpGain.gain.setValueAtTime(0.0001, now);
+    thumpGain.gain.linearRampToValueAtTime(thumpPeak, now + 0.002);
+    thumpGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.044);
+
+    thumpOsc.connect(thumpGain);
+    thumpGain.connect(this.compressor);
+    thumpOsc.start(now);
+    thumpOsc.stop(now + 0.05);
+    thumpOsc.onended = () => {
+      thumpOsc.disconnect();
+      thumpGain.disconnect();
+    };
+
+    // 2. Crisp mechanical magnetic lock micro-click (980Hz -> 420Hz bandpass)
+    const clickOsc = this.ctx.createOscillator();
+    clickOsc.type = 'triangle';
+    clickOsc.frequency.setValueAtTime(980, now);
+    clickOsc.frequency.exponentialRampToValueAtTime(420, now + 0.015);
+
+    const clickBp = this.ctx.createBiquadFilter();
+    clickBp.type = 'bandpass';
+    clickBp.frequency.setValueAtTime(860, now);
+    clickBp.Q.setValueAtTime(3.6, now);
+
+    const clickGain = this.ctx.createGain();
+    clickGain.gain.setValueAtTime(0.0001, now);
+    clickGain.gain.linearRampToValueAtTime(0.14 + clampedIntensity * 0.1, now + 0.0015);
+    clickGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.018);
+
+    clickOsc.connect(clickBp);
+    clickBp.connect(clickGain);
+    clickGain.connect(this.compressor);
+    clickOsc.start(now);
+    clickOsc.stop(now + 0.024);
+    clickOsc.onended = () => {
+      clickOsc.disconnect();
+      clickBp.disconnect();
+      clickGain.disconnect();
+    };
+  }
+
   public getEffectiveHeading(): number {
     if (this.panningMode === 'cardinal') {
       return ((Math.round(this.activeHeading / 90) * 90) % 360 + 360) % 360;
@@ -194,6 +482,16 @@ export class AudioEngine {
   public setAtmosphericFlowEnabled(enabled: boolean): void {
     this.atmosphericFlowEnabled = enabled;
     this.atmosphericFlow?.setEnabled(enabled);
+  }
+
+  public getWindTurbulenceMultiplier(): number {
+    return this.windTurbulenceMultiplier;
+  }
+
+  public setWindTurbulenceMultiplier(multiplier: number): void {
+    const clamped = Math.max(0, Math.min(2.5, Number.isFinite(multiplier) ? multiplier : 1.0));
+    this.windTurbulenceMultiplier = clamped;
+    this.atmosphericFlow?.setTurbulenceMultiplier(clamped);
   }
 
   public updateWindField(field: WindVectorField): HeadingWindTelemetry {
@@ -254,6 +552,12 @@ export class AudioEngine {
       this.compressor.attack.setValueAtTime(0.003, this.ctx.currentTime);
       this.compressor.release.setValueAtTime(0.15, this.ctx.currentTime);
 
+      this.narrationDuckGain = this.ctx.createGain();
+      this.narrationDuckGain.gain.setValueAtTime(
+        this.isNarrationActive ? 0.35 : 1.0,
+        this.ctx.currentTime
+      );
+
       this.analyser = this.ctx.createAnalyser();
       this.analyser.fftSize = 256;
       this.analyser.smoothingTimeConstant = 0.78;
@@ -270,7 +574,8 @@ export class AudioEngine {
       this.reverbToneFilter.connect(this.wetGain);
       this.wetGain.connect(this.compressor);
 
-      this.compressor.connect(this.analyser);
+      this.compressor.connect(this.narrationDuckGain);
+      this.narrationDuckGain.connect(this.analyser);
       this.analyser.connect(this.masterGain);
       this.masterGain.connect(this.ctx.destination);
 
@@ -284,6 +589,9 @@ export class AudioEngine {
 
       this.atmosphericFlow = new AtmosphericFlowSynth(this.ctx, this.spatialBus);
       this.atmosphericFlow.setEnabled(this.atmosphericFlowEnabled);
+      this.atmosphericFlow.setTurbulenceMultiplier(this.windTurbulenceMultiplier);
+      this.solarChime = new SolarChimeSynth(this.ctx, this.spatialBus);
+      this.solarFlareSynth = new SolarFlareSynth(this.ctx, this.compressor);
     }
 
     if (this.ctx.state === 'suspended') {
@@ -294,13 +602,30 @@ export class AudioEngine {
     return this.ctx;
   }
 
+  public getOutputAudioNodes(): { context: AudioContext | null; gainNode: GainNode | null } {
+    return {
+      context: this.ctx,
+      gainNode: this.narrationDuckGain,
+    };
+  }
+
   public async start(): Promise<void> {
     await this.initOnUserGesture();
     if (!this.synths) return;
+    if (this.ctx && this.narrationDuckGain) {
+      const now = this.ctx.currentTime;
+      this.narrationDuckGain.gain.cancelScheduledValues(now);
+      this.narrationDuckGain.gain.setTargetAtTime(
+        this.isNarrationActive ? 0.35 : 1.0,
+        now,
+        0.06
+      );
+    }
     for (const key of LAYER_ORDER) {
       this.synths[key].start();
     }
     this.atmosphericFlow?.setEnabled(this.atmosphericFlowEnabled);
+    this.atmosphericFlow?.setTurbulenceMultiplier(this.windTurbulenceMultiplier);
     this.atmosphericFlow?.start();
     this.isAudioRunning = true;
     this.setHeading(this.activeHeading, 0.02);
@@ -317,6 +642,40 @@ export class AudioEngine {
     this.isAudioRunning = false;
   }
 
+  public setNarrationActive(active: boolean, recoveryDelaySec = 0): void {
+    this.isNarrationActive = active;
+    if (this.ctx && this.narrationDuckGain) {
+      const now = this.ctx.currentTime;
+      const gainParam = this.narrationDuckGain.gain;
+
+      if (active) {
+        if (typeof gainParam.cancelAndHoldAtTime === 'function') {
+          gainParam.cancelAndHoldAtTime(now);
+        } else {
+          gainParam.cancelScheduledValues(now);
+        }
+        gainParam.setTargetAtTime(0.35, now, 0.09);
+        return;
+      }
+
+      if (recoveryDelaySec > 0) {
+        // Allow post-speech 100ms exponential decay ramp to complete before gently restoring running stream
+        if (this.isAudioRunning) {
+          gainParam.setTargetAtTime(1.0, now + recoveryDelaySec, 0.35);
+        }
+      } else {
+        if (typeof gainParam.cancelAndHoldAtTime === 'function') {
+          gainParam.cancelAndHoldAtTime(now);
+        } else {
+          gainParam.cancelScheduledValues(now);
+        }
+        if (this.isAudioRunning) {
+          gainParam.setTargetAtTime(1.0, now, 0.35);
+        }
+      }
+    }
+  }
+
   public setMasterVolume(volume: number): void {
     const clamped = Math.max(0, Math.min(1, volume));
     this.masterVolume = clamped;
@@ -329,7 +688,40 @@ export class AudioEngine {
     headingDegrees: number,
     crossfadeDurationSec = AudioEngine.HEADING_CROSSFADE_SEC
   ): void {
-    this.activeHeading = ((headingDegrees % 360) + 360) % 360;
+    const normalizedInput = ((headingDegrees % 360) + 360) % 360;
+    let resolvedHeading = normalizedInput;
+
+    if (this.magneticSnapEnabled && this.latestVectors) {
+      const snap = this.resolveMagneticSnap(normalizedInput, this.latestVectors);
+      resolvedHeading = snap.snappedAngle;
+      if (snap.targetKey !== this.lastMagneticDetentKey) {
+        this.lastMagneticDetentKey = snap.targetKey;
+        this.triggerMagneticDetentHaptic(snap.anomalyIntensity);
+      }
+    } else if (this.latestVectors && this.prevHeadingForAnomalyCross !== null) {
+      // Detect crossing the exact center azimuth of a high-intensity anomaly region
+      const prevAngle = this.prevHeadingForAnomalyCross;
+      for (const key of LAYER_ORDER) {
+        const anomaly = this.latestVectors[key]?.climateAnomaly ?? 0;
+        if (anomaly < AudioEngine.MAGNETIC_ANOMALY_THRESHOLD) continue;
+        const centerAz = NASA_GIBS_LAYERS[key].azimuth;
+        const prevSigned = ((prevAngle - centerAz + 540) % 360) - 180;
+        const currSigned = ((normalizedInput - centerAz + 540) % 360) - 180;
+        if (
+          Math.abs(prevSigned) <= 25 &&
+          Math.abs(currSigned) <= 25 &&
+          ((prevSigned < 0 && currSigned >= 0) ||
+            (prevSigned > 0 && currSigned <= 0) ||
+            (Math.abs(currSigned) < 0.8 && Math.abs(prevSigned) >= 0.8))
+        ) {
+          this.triggerMagneticDetentHaptic(anomaly);
+          break;
+        }
+      }
+    }
+
+    this.prevHeadingForAnomalyCross = resolvedHeading;
+    this.activeHeading = resolvedHeading;
     const effectiveHeading = this.getEffectiveHeading();
 
     const updateWindAtAngle = (angleDeg: number) => {
@@ -393,6 +785,7 @@ export class AudioEngine {
     cadenceMs: number,
     dateStr: string
   ): AudioEventEntry[] {
+    const dopplers = this.computeFilteredDopplerMap(vectors, cadenceMs, dateStr);
     if (!dateStr.startsWith('2007-')) return [];
 
     const timestamp = new Date().toISOString().slice(11, 19);
@@ -401,7 +794,7 @@ export class AudioEngine {
     for (const key of LAYER_ORDER) {
       const vec = vectors[key];
       const meta = NASA_GIBS_LAYERS[key];
-      const doppler = AudioEngine.computeDopplerShift(vec.motion, cadenceMs);
+      const doppler = dopplers[key];
       const baseFreq = quantizeToPentatonic(vec.hue, vec.brightness, this.scaleMode).frequency;
       const frequencyHz = Math.round(baseFreq * doppler.multiplier);
 
@@ -432,6 +825,7 @@ export class AudioEngine {
       }
 
       if (vec.motion >= AudioEngine.HIGH_MOTION_THRESHOLD) {
+        const signedPct = `${doppler.shiftPct >= 0 ? '+' : ''}${doppler.shiftPct.toFixed(1)}%`;
         const entry: AudioEventEntry = {
           id: `evt-mot-${dateStr}-${key}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
           timestamp,
@@ -443,7 +837,7 @@ export class AudioEngine {
           frequencyHz,
           message: `HIGH INTENSITY MOTION · ${meta.cardinal.toUpperCase()} (${meta.azimuthLabel} ${meta.domain.toUpperCase()}) · ${(
             vec.motion * 100
-          ).toFixed(1)}% VELOCITY → DOPPLER +${doppler.shiftPct.toFixed(1)}% (${frequencyHz} HZ)`,
+          ).toFixed(1)}% VELOCITY → DOPPLER ${signedPct} (${frequencyHz} HZ)`,
         };
         detected.push(entry);
         this.audioEventListener?.(entry);
@@ -458,6 +852,7 @@ export class AudioEngine {
     cadenceMs: number,
     dateStr?: string
   ): Record<LayerKey, number> {
+    const dopplers = this.computeFilteredDopplerMap(vectors, cadenceMs, dateStr);
     const freqs: Record<LayerKey, number> = {
       north: 0,
       east: 0,
@@ -466,8 +861,7 @@ export class AudioEngine {
     };
 
     for (const key of LAYER_ORDER) {
-      const doppler = AudioEngine.computeDopplerShift(vectors[key].motion, cadenceMs);
-      this.lastDopplerByLayer[key] = doppler;
+      const doppler = dopplers[key];
       if (this.synths && this.isAudioRunning) {
         freqs[key] = this.synths[key].updateFromFeatures(
           vectors[key],
@@ -483,6 +877,174 @@ export class AudioEngine {
     }
 
     return freqs;
+  }
+
+  /**
+   * Monitors real-time/archive solar activity telemetry and triggers a glitchy
+   * metallic auroral chime when auroral potential exceeds threshold.
+   */
+  public evaluateSolarActivity(
+    telemetry: SolarActivityTelemetry,
+    dateStr: string,
+    forceTrigger = false,
+    referenceLayerFreqHz = 220
+  ): AudioEventEntry | null {
+    const nowMs = Date.now();
+    const crossedThreshold =
+      telemetry.intensity >= AudioEngine.SOLAR_ACTIVITY_THRESHOLD &&
+      (this.prevSolarIntensity < AudioEngine.SOLAR_ACTIVITY_THRESHOLD ||
+        telemetry.intensity - this.prevSolarIntensity >= 0.05 ||
+        nowMs - this.lastSolarTriggerMs >= 14_000);
+
+    this.prevSolarIntensity = telemetry.intensity;
+
+    if (!forceTrigger && !crossedThreshold) {
+      return null;
+    }
+    if (!forceTrigger && nowMs - this.lastSolarTriggerMs < 8_000) {
+      return null;
+    }
+
+    this.lastSolarTriggerMs = nowMs;
+    const playIntensity = forceTrigger ? Math.max(0.84, telemetry.intensity) : telemetry.intensity;
+    const chimeHz =
+      this.solarChime && (this.isAudioRunning || forceTrigger)
+        ? this.solarChime.triggerAuroralChime(playIntensity)
+        : 587;
+
+    const kp = telemetry.kpIndex;
+    const stormScale =
+      kp >= 8
+        ? 'G4 SEVERE'
+        : kp >= 7
+        ? 'G3 STRONG'
+        : kp >= 6
+        ? 'G2 MODERATE'
+        : kp >= 5
+        ? 'G1 MINOR'
+        : 'SUB-STORM SURGE';
+    const baseHz = Math.max(98, Math.round(referenceLayerFreqHz || 220));
+    const impactRatio = 1 + Math.max(0.012, (playIntensity - 0.45) * 0.065);
+    const freqDeltaHz = Math.max(2, Math.round(baseHz * (impactRatio - 1)));
+    const peakOvertoneHz = Math.round(chimeHz * 3.17);
+
+    let peakAnomalyKey: LayerKey = 'north';
+    if (this.latestVectors) {
+      let bestVal = -1;
+      for (const k of LAYER_ORDER) {
+        const val = this.latestVectors[k]?.climateAnomaly ?? 0;
+        if (val > bestVal) {
+          bestVal = val;
+          peakAnomalyKey = k;
+        }
+      }
+    }
+
+    const timestamp = new Date().toISOString().slice(11, 19);
+    const entry: AudioEventEntry = {
+      id: `evt-solar-${dateStr}-${nowMs}-${Math.random().toString(36).slice(2, 6)}`,
+      timestamp,
+      dateStr,
+      layerKey: peakAnomalyKey,
+      kind: 'solar_activity',
+      value: playIntensity,
+      threshold: AudioEngine.SOLAR_ACTIVITY_THRESHOLD,
+      frequencyHz: chimeHz,
+      message: `SOLAR STORM (${stormScale}) · KP ${kp.toFixed(1)} · WIND ${
+        telemetry.solarWindKms
+      } KM/S · AURORA ${Math.round(playIntensity * 100)}% → FREQ IMPACT +${freqDeltaHz} HZ (${baseHz}→${
+        baseHz + freqDeltaHz
+      } HZ) · CHIME ${chimeHz}–${peakOvertoneHz} HZ`,
+    };
+    this.audioEventListener?.(entry);
+    return entry;
+  }
+
+  public async triggerSolarAuroraPing(
+    telemetry: SolarActivityTelemetry,
+    dateStr: string,
+    referenceLayerFreqHz = 220
+  ): Promise<AudioEventEntry | null> {
+    await this.initOnUserGesture();
+    return this.evaluateSolarActivity(telemetry, dateStr, true, referenceLayerFreqHz);
+  }
+
+  /**
+   * Monitors solar wind telemetry for extreme speed spikes (>= 680 km/s or sudden +95 km/s surge)
+   * and fires a brief, high-intensity filtered white-noise burst with a sharp frequency sweep.
+   */
+  public evaluateSolarWindFlare(
+    telemetry: SolarActivityTelemetry,
+    dateStr: string,
+    forceTrigger = false
+  ): AudioEventEntry | null {
+    const nowMs = Date.now();
+    const windKms = telemetry.solarWindKms;
+    const deltaKms = this.prevSolarWindKms !== null ? windKms - this.prevSolarWindKms : 0;
+
+    const isExtremeSpeed = windKms >= AudioEngine.SOLAR_WIND_FLARE_THRESHOLD_KMS;
+    const isSuddenJump = deltaKms >= AudioEngine.SOLAR_WIND_SPIKE_DELTA_KMS && windKms >= 590;
+    const crossedThreshold =
+      (isExtremeSpeed &&
+        (this.prevSolarWindKms === null ||
+          this.prevSolarWindKms < AudioEngine.SOLAR_WIND_FLARE_THRESHOLD_KMS ||
+          nowMs - this.lastSolarFlareMs >= 16_000)) ||
+      isSuddenJump;
+
+    this.prevSolarWindKms = windKms;
+
+    if (!forceTrigger && !crossedThreshold) {
+      return null;
+    }
+    if (!forceTrigger && nowMs - this.lastSolarFlareMs < 10_000) {
+      return null;
+    }
+
+    this.lastSolarFlareMs = nowMs;
+    const rawIntensity = Math.min(1, Math.max(0.65, (windKms - 450) / 400));
+    const flareIntensity = forceTrigger ? Math.max(0.88, rawIntensity) : rawIntensity;
+
+    const sweep =
+      this.solarFlareSynth && (this.isAudioRunning || forceTrigger)
+        ? this.solarFlareSynth.triggerSolarFlareBurst(flareIntensity)
+        : { startHz: Math.round(7200 + flareIntensity * 2200), endHz: 260 };
+
+    let peakAnomalyKey: LayerKey = 'north';
+    if (this.latestVectors) {
+      let bestVal = -1;
+      for (const k of LAYER_ORDER) {
+        const val = this.latestVectors[k]?.climateAnomaly ?? 0;
+        if (val > bestVal) {
+          bestVal = val;
+          peakAnomalyKey = k;
+        }
+      }
+    }
+
+    const timestamp = new Date().toISOString().slice(11, 19);
+    const entry: AudioEventEntry = {
+      id: `evt-flare-${dateStr}-${nowMs}-${Math.random().toString(36).slice(2, 6)}`,
+      timestamp,
+      dateStr,
+      layerKey: peakAnomalyKey,
+      kind: 'solar_flare',
+      value: windKms,
+      threshold: AudioEngine.SOLAR_WIND_FLARE_THRESHOLD_KMS,
+      frequencyHz: sweep.startHz,
+      message: `SOLAR FLARE · WIND SPIKE ${windKms} KM/S${
+        deltaKms > 0 ? ` (+${Math.round(deltaKms)} KM/S)` : ''
+      } · KP ${telemetry.kpIndex.toFixed(1)} · NOISE SWEEP ${sweep.startHz}→${sweep.endHz} HZ`,
+    };
+    this.audioEventListener?.(entry);
+    return entry;
+  }
+
+  public async triggerSolarFlarePing(
+    telemetry: SolarActivityTelemetry,
+    dateStr: string
+  ): Promise<AudioEventEntry | null> {
+    await this.initOnUserGesture();
+    return this.evaluateSolarWindFlare(telemetry, dateStr, true);
   }
 
   public async testSpatialAudio(
@@ -539,6 +1101,8 @@ export class AudioEngine {
     this.spatialPanner?.dispose();
     this.atmosphericFlow?.dispose();
     this.atmosphericFlow = null;
+    this.solarChime = null;
+    this.solarFlareSynth = null;
     if (this.synths) {
       for (const key of LAYER_ORDER) {
         this.synths[key].dispose();
@@ -551,6 +1115,7 @@ export class AudioEngine {
     this.reverbToneFilter?.disconnect();
     this.wetGain?.disconnect();
     this.compressor?.disconnect();
+    this.narrationDuckGain?.disconnect();
     this.analyser?.disconnect();
     this.masterGain?.disconnect();
     if (this.ctx) {

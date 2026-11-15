@@ -25,7 +25,7 @@ export class LayerSynth {
     this.osc1.frequency.setValueAtTime(220, ctx.currentTime);
 
     this.osc2 = ctx.createOscillator();
-    this.osc2.type = 'sawtooth';
+    this.osc2.type = 'triangle';
     this.osc2.frequency.setValueAtTime(220, ctx.currentTime);
 
     this.osc2Gain = ctx.createGain();
@@ -33,8 +33,8 @@ export class LayerSynth {
 
     this.filter = ctx.createBiquadFilter();
     this.filter.type = 'lowpass';
-    this.filter.frequency.setValueAtTime(1200, ctx.currentTime);
-    this.filter.Q.setValueAtTime(2.4, ctx.currentTime);
+    this.filter.frequency.setValueAtTime(760, ctx.currentTime);
+    this.filter.Q.setValueAtTime(0.7, ctx.currentTime);
 
     this.envelopeGain = ctx.createGain();
     this.envelopeGain.gain.setValueAtTime(0.0, ctx.currentTime);
@@ -129,35 +129,44 @@ export class LayerSynth {
   ): number {
     const now = this.ctx.currentTime;
     const { frequency } = quantizeToPentatonic(features.hue, features.brightness, scaleMode);
-    const clampedDoppler = Math.max(0.8, Math.min(1.5, dopplerMultiplier));
+    const clampedDoppler = Math.max(0.5, Math.min(2.0, dopplerMultiplier));
     const shiftedFrequency = frequency * clampedDoppler;
     this.currentFreq = shiftedFrequency;
 
-    this.osc1.frequency.setTargetAtTime(shiftedFrequency, now, 0.06);
+    const glideTau = Math.abs(clampedDoppler - 1) > 0.14 ? 0.14 : 0.08;
+    this.osc1.frequency.setTargetAtTime(shiftedFrequency, now, glideTau);
 
     const detuneRatio = 1 + 0.015 + features.climateAnomaly * 0.085;
-    this.osc2.frequency.setTargetAtTime(shiftedFrequency * detuneRatio, now, 0.06);
-    this.osc2Gain.gain.setTargetAtTime(features.climateAnomaly * 0.28, now, 0.08);
+    this.osc2.frequency.setTargetAtTime(shiftedFrequency * detuneRatio, now, glideTau);
+    this.osc2Gain.gain.setTargetAtTime(features.climateAnomaly * 0.14, now, 0.08);
 
-    const cutoff = 400 + features.saturation * 5600;
-    this.filter.frequency.setTargetAtTime(cutoff, now, 0.08);
+    const cutoff = 260 + features.saturation * 940;
+    this.filter.frequency.setTargetAtTime(cutoff, now, 0.09);
 
-    const baseSustained = 0.085 + features.brightness * 0.06;
-    const pulsePeak = Math.min(0.28, baseSustained + 0.09 + features.edgeDensity * 0.1);
+    const baseSustained = 0.055 + features.brightness * 0.035;
+    const pulsePeak = Math.min(0.16, baseSustained + 0.05 + features.edgeDensity * 0.055);
     const subdivisions = features.edgeDensity > 0.65 ? 3 : features.edgeDensity > 0.35 ? 2 : 1;
     const stepSec = Math.max(0.8, cadenceMs / 1000);
     const subInterval = stepSec / subdivisions;
 
-    this.envelopeGain.gain.cancelScheduledValues(now);
+    const envParam = this.envelopeGain.gain;
+    if (typeof envParam.cancelAndHoldAtTime === 'function') {
+      envParam.cancelAndHoldAtTime(now);
+    } else {
+      envParam.cancelScheduledValues(now);
+      envParam.setValueAtTime(envParam.value, now);
+    }
+
     for (let i = 0; i < subdivisions; i++) {
       const t = now + i * subInterval;
-      this.envelopeGain.gain.setValueAtTime(baseSustained, t);
-      this.envelopeGain.gain.linearRampToValueAtTime(pulsePeak, t + 0.04);
-      this.envelopeGain.gain.setTargetAtTime(
-        baseSustained,
-        t + 0.06,
-        Math.max(0.08, subInterval * 0.35)
-      );
+      if (i === 0) {
+        envParam.linearRampToValueAtTime(pulsePeak, t + 0.09);
+        envParam.setTargetAtTime(baseSustained, t + 0.11, Math.max(0.09, subInterval * 0.35));
+      } else {
+        envParam.setValueAtTime(baseSustained, t);
+        envParam.linearRampToValueAtTime(pulsePeak, t + 0.05);
+        envParam.setTargetAtTime(baseSustained, t + 0.07, Math.max(0.08, subInterval * 0.35));
+      }
     }
 
     return this.currentFreq;
@@ -165,13 +174,13 @@ export class LayerSynth {
 
   public triggerCalibrationPing(durationSec = 0.45): void {
     const now = this.ctx.currentTime;
-    this.osc1.frequency.setTargetAtTime(this.currentFreq || 440, now, 0.01);
-    this.filter.frequency.setTargetAtTime(3400, now, 0.01);
-    this.focusGain.gain.setTargetAtTime(1.0, now, 0.01);
+    this.osc1.frequency.setTargetAtTime(this.currentFreq || 261.63, now, 0.015);
+    this.filter.frequency.setTargetAtTime(1150, now, 0.02);
+    this.focusGain.gain.setTargetAtTime(1.0, now, 0.015);
 
     this.envelopeGain.gain.cancelScheduledValues(now);
     this.envelopeGain.gain.setValueAtTime(0.0, now);
-    this.envelopeGain.gain.linearRampToValueAtTime(0.32, now + 0.03);
-    this.envelopeGain.gain.setTargetAtTime(0.0, now + durationSec * 0.65, 0.08);
+    this.envelopeGain.gain.linearRampToValueAtTime(0.14, now + 0.05);
+    this.envelopeGain.gain.setTargetAtTime(0.0, now + durationSec * 0.65, 0.1);
   }
 }

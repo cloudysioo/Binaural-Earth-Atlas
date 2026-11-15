@@ -133,11 +133,11 @@ export const TemporalTrendsChart: React.FC<TemporalTrendsChartProps> = ({
     const chart = chartRef.current;
     if (!chart) return;
 
-    const primaryTrace = nightMode ? '#FF3B30' : '#5EEAD4';
-    const secondaryTrace = nightMode ? '#B91C1C' : '#FB7185';
-    const textPrimary = nightMode ? '#FF5C58' : '#F1F5F9';
-    const textMuted = nightMode ? '#D94848' : '#94A3B8';
-    const gridColor = nightMode ? 'rgba(77, 17, 25, 0.6)' : 'rgba(26, 46, 68, 0.55)';
+    const primaryTrace = nightMode ? '#FF453A' : '#5EEAD4';
+    const secondaryTrace = nightMode ? '#F0522E' : '#FB7185';
+    const textPrimary = nightMode ? '#FF7875' : '#F8FAFC';
+    const textMuted = nightMode ? '#F47272' : '#B9C8DC';
+    const gridColor = nightMode ? 'rgba(194, 48, 66, 0.45)' : 'rgba(75, 115, 156, 0.45)';
 
     chart.data.labels = history.map((pt) => pt.label);
     chart.data.datasets[0].data = history.map((pt) => Number(pt.intensity.toFixed(3)));
@@ -152,7 +152,7 @@ export const TemporalTrendsChart: React.FC<TemporalTrendsChartProps> = ({
     }
     if (chart.options.plugins?.tooltip) {
       chart.options.plugins.tooltip.backgroundColor = nightMode ? '#070102' : '#060B14';
-      chart.options.plugins.tooltip.borderColor = nightMode ? '#4D1119' : '#1A2E44';
+      chart.options.plugins.tooltip.borderColor = nightMode ? '#C23042' : '#4B739C';
       chart.options.plugins.tooltip.titleColor = textPrimary;
       chart.options.plugins.tooltip.bodyColor = textPrimary;
     }
@@ -167,17 +167,17 @@ export const TemporalTrendsChart: React.FC<TemporalTrendsChartProps> = ({
   return (
     <section
       aria-label={`${archiveYear} Temporal Trends Chart`}
-      className="border border-[var(--border-grid)] bg-[var(--bg-console)] flex flex-col"
+      className="border border-[var(--border-strong)] bg-[var(--bg-console)] flex flex-col"
     >
-      <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--border-grid)] bg-[var(--bg-panel)]">
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-primary)]">
+      <div className="flex items-center justify-between gap-2 px-3 h-[38px] border-b border-[var(--border-grid)] bg-[var(--bg-panel)] whitespace-nowrap min-w-0">
+        <h2 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-primary)] truncate">
           {archiveYear} Temporal Trajectory
         </h2>
-        <span className="text-[11px] font-mono-tabular text-[var(--accent-mint)]">
+        <span className="text-xs font-mono-tabular font-semibold text-[var(--accent-mint)] shrink-0">
           {history.length} / {maxMonths} MONTHS
         </span>
       </div>
-      <div className="p-3 bg-[var(--bg-obsidian)] h-[168px] w-full">
+      <div className="p-3 bg-[var(--bg-obsidian)] h-[168px] w-full shrink-0">
         <canvas ref={canvasRef} aria-label={`${archiveYear} Temporal Trends Chart`} />
       </div>
     </section>

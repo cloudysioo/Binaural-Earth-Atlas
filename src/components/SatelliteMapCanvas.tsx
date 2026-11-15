@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Globe, Map as MapIcon, Sun, Thermometer } from 'lucide-react';
+import { Globe, Map as MapIcon, Radar, Sun, Thermometer, Wind } from 'lucide-react';
 import {
   ANOMALY_MAX_C,
   ANOMALY_MIN_C,
@@ -22,12 +22,26 @@ import {
   SolarRegime,
 } from '../geo/solarTerminator';
 import {
+  AMBIENT_SLP_HPA,
+  buildStormRadarModel,
+  renderStormRadarOverlay,
+  sampleStormPressureHpa,
+  STORM_RADAR_LEGEND_STOPS,
+} from '../geo/stormRadarOverlay';
+import {
   COASTLINE_LINES_RAD,
   COUNTRY_BORDERS_RAD,
   strokePackedLinesOrthographic,
   strokePackedLinesPlate,
 } from '../geo/worldBorders';
-import { ArchiveYear, LayerKey, NASA_GIBS_LAYERS } from '../types/bea';
+import { ArchiveYear, FeatureVector, LayerKey, NASA_GIBS_LAYERS } from '../types/bea';
+import {
+  createWindParticlePool,
+  stepAndDrawWindOverlay,
+  WIND_SPEED_LEGEND_STOPS,
+  WindParticle,
+} from '../geo/windFlowOverlay';
+import { TactileSwitchToggle } from './TactileSwitchToggle';
 
 export type ProjectionMode = 'globe' | 'plate';
 
@@ -58,12 +72,19 @@ interface SatelliteMapCanvasProps {
   projection: ProjectionMode;
   showAnomalyHeatmap: boolean;
   showSolarTerminator: boolean;
+  showWindFlow: boolean;
+  showStormRadar: boolean;
+  stormRadarIntensity: number;
   utcTimestampMs: number;
   windField?: WindVectorField | null;
+  vectors: Record<LayerKey, FeatureVector>;
   nightMode?: boolean;
   onToggleProjection: (mode: ProjectionMode) => void;
   onToggleAnomalyHeatmap: () => void;
   onToggleSolarTerminator: () => void;
+  onToggleWindFlow: () => void;
+  onToggleStormRadar: () => void;
+  onChangeStormRadarIntensity: (intensity: number) => void;
   onSelectBookmark: (layerKey: LayerKey, label: string) => void;
 }
 
@@ -146,22 +167,38 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
   projection,
   showAnomalyHeatmap,
   showSolarTerminator,
+  showWindFlow,
+  showStormRadar,
+  stormRadarIntensity,
   utcTimestampMs,
   windField = null,
+  vectors,
   nightMode = false,
   onToggleProjection,
   onToggleAnomalyHeatmap,
   onToggleSolarTerminator,
+  onToggleWindFlow,
+  onToggleStormRadar,
+  onChangeStormRadarIntensity,
   onSelectBookmark,
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const globeCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const windCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const stormRadarCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const windParticlesRef = useRef<WindParticle[]>(createWindParticlePool());
+  const stormRadarTimeRef = useRef<number>(0);
   const fittedRectRef = useRef<FittedRect>({ x: 0, y: 0, w: ANALYSIS_WIDTH, h: ANALYSIS_HEIGHT });
 
   const [containerSize, setContainerSize] = useState<{ width: number; height: number }>({
     width: 840,
     height: 420,
+  });
+
+  const [stormMetrics, setStormMetrics] = useState<{ activeCores: number; deepestHpa: number }>({
+    activeCores: 7,
+    deepestHpa: 974,
   });
 
   const [probeInfo, setProbeInfo] = useState<{
@@ -175,6 +212,7 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
     windSpeedMs: number | null;
     windBearingDeg: number | null;
     windOcean: boolean;
+    stormSlpHpa: number | null;
     cursorX: number;
     cursorY: number;
     isDragging: boolean;
@@ -183,6 +221,11 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
   const legendStops = useMemo(() => getAnomalyLegendStops(), []);
 
   const solarPosition = useMemo(() => computeSolarPosition(utcTimestampMs), [utcTimestampMs]);
+
+  const stormRadarModel = useMemo(
+    () => buildStormRadarModel(windField, dateString),
+    [windField, dateString]
+  );
 
   const anomalyField = useMemo(() => {
     if (!sstCanvas && !sourceCanvas) return null;
@@ -727,6 +770,175 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
     nightMode,
   ]);
 
+  // Dedicated 60fps Wind Flow Streamline animation layer across both 3D Globe & 2D Plate Carree
+  useEffect(() => {
+    const overlay = windCanvasRef.current;
+    if (!overlay) return;
+
+    const w = containerSize.width;
+    const h = containerSize.height;
+    if (overlay.width !== w || overlay.height !== h) {
+      overlay.width = w;
+      overlay.height = h;
+    }
+
+    const ctx = overlay.getContext('2d');
+    if (!ctx) return;
+
+    // Clear stale motion trails immediately on projection/center/toggle/palette change
+    ctx.clearRect(0, 0, w, h);
+
+    if (!showWindFlow || !windField) {
+      return;
+    }
+
+    let rafId = 0;
+    let lastTimeMs = performance.now();
+
+    const tick = (nowMs: number) => {
+      const dtSec = (nowMs - lastTimeMs) / 1000;
+      lastTimeMs = nowMs;
+
+      const fitted =
+        projection === 'plate'
+          ? computeContainedRect(
+              w,
+              h,
+              sourceCanvas?.width ?? ANALYSIS_WIDTH,
+              sourceCanvas?.height ?? ANALYSIS_HEIGHT
+            )
+          : fittedRectRef.current;
+
+      stepAndDrawWindOverlay({
+        ctx,
+        width: w,
+        height: h,
+        dtSec,
+        projection,
+        windField,
+        particles: windParticlesRef.current,
+        globeCenter,
+        fittedRect: fitted,
+        nightMode,
+      });
+
+      rafId = window.requestAnimationFrame(tick);
+    };
+
+    rafId = window.requestAnimationFrame(tick);
+    return () => {
+      window.cancelAnimationFrame(rafId);
+      ctx.clearRect(0, 0, w, h);
+    };
+  }, [
+    showWindFlow,
+    windField,
+    projection,
+    globeCenter,
+    containerSize,
+    sourceCanvas,
+    nightMode,
+  ]);
+
+  // Dedicated animated D3 Storm Radar pressure-contour layer across both 3D Globe & 2D Plate Carree
+  useEffect(() => {
+    const overlay = stormRadarCanvasRef.current;
+    if (!overlay) return;
+
+    const w = containerSize.width;
+    const h = containerSize.height;
+    if (overlay.width !== w || overlay.height !== h) {
+      overlay.width = w;
+      overlay.height = h;
+    }
+
+    const ctx = overlay.getContext('2d');
+    if (!ctx) return;
+
+    ctx.clearRect(0, 0, w, h);
+
+    if (!showStormRadar) {
+      return;
+    }
+
+    const prefersReducedMotion =
+      typeof window !== 'undefined' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    const getFitted = () =>
+      projection === 'plate'
+        ? computeContainedRect(
+            w,
+            h,
+            sourceCanvas?.width ?? ANALYSIS_WIDTH,
+            sourceCanvas?.height ?? ANALYSIS_HEIGHT
+          )
+        : fittedRectRef.current;
+
+    const drawFrame = (timeSec: number) =>
+      renderStormRadarOverlay({
+        ctx,
+        width: w,
+        height: h,
+        projection,
+        model: stormRadarModel,
+        intensity: stormRadarIntensity,
+        timeSec,
+        globeCenter,
+        fittedRect: getFitted(),
+        nightMode,
+      });
+
+    const initialMetrics = drawFrame(stormRadarTimeRef.current);
+    setStormMetrics((prev) =>
+      prev.activeCores === initialMetrics.activeCores &&
+      prev.deepestHpa === initialMetrics.deepestHpa
+        ? prev
+        : initialMetrics
+    );
+
+    if (prefersReducedMotion || stormRadarIntensity <= 0.01) {
+      return;
+    }
+
+    let rafId = 0;
+    let lastTimeMs = performance.now();
+    let lastMetricsSyncMs = lastTimeMs;
+
+    const tick = (nowMs: number) => {
+      const dtSec = Math.min(0.05, Math.max(0.004, (nowMs - lastTimeMs) / 1000));
+      lastTimeMs = nowMs;
+      stormRadarTimeRef.current += dtSec;
+
+      const metrics = drawFrame(stormRadarTimeRef.current);
+      if (nowMs - lastMetricsSyncMs > 300) {
+        lastMetricsSyncMs = nowMs;
+        setStormMetrics((prev) =>
+          prev.activeCores === metrics.activeCores && prev.deepestHpa === metrics.deepestHpa
+            ? prev
+            : metrics
+        );
+      }
+
+      rafId = window.requestAnimationFrame(tick);
+    };
+
+    rafId = window.requestAnimationFrame(tick);
+    return () => {
+      window.cancelAnimationFrame(rafId);
+      ctx.clearRect(0, 0, w, h);
+    };
+  }, [
+    showStormRadar,
+    stormRadarIntensity,
+    stormRadarModel,
+    projection,
+    globeCenter,
+    containerSize,
+    sourceCanvas,
+    nightMode,
+  ]);
+
   const samplePointTelemetry = (
     lon: number,
     lat: number
@@ -739,6 +951,7 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
     windSpeedMs: number | null;
     windBearingDeg: number | null;
     windOcean: boolean;
+    stormSlpHpa: number | null;
   } => {
     let lum255 = 0;
     if (sourcePixels) {
@@ -768,6 +981,17 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
 
     const solarSample = sampleSolarAt(solarPosition, lon, lat);
     const windSample = windField ? sampleWindAtCoord(windField, lon, lat) : null;
+    const stormSlpHpa = showStormRadar
+      ? Math.round(
+          sampleStormPressureHpa(
+            stormRadarModel,
+            lon,
+            lat,
+            stormRadarIntensity,
+            stormRadarTimeRef.current
+          )
+        )
+      : null;
 
     return {
       lumPct,
@@ -778,6 +1002,7 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
       windSpeedMs: windSample ? windSample.speedMs : null,
       windBearingDeg: windSample ? windSample.bearingDeg : null,
       windOcean: windSample ? windSample.isOcean : false,
+      stormSlpHpa,
     };
   };
 
@@ -817,6 +1042,7 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
       windSpeedMs: telemetry.windSpeedMs,
       windBearingDeg: telemetry.windBearingDeg,
       windOcean: telemetry.windOcean,
+      stormSlpHpa: telemetry.stormSlpHpa,
       cursorX,
       cursorY,
       isDragging: false,
@@ -883,6 +1109,7 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
         windSpeedMs: telemetry.windSpeedMs,
         windBearingDeg: telemetry.windBearingDeg,
         windOcean: telemetry.windOcean,
+        stormSlpHpa: telemetry.stormSlpHpa,
         cursorX,
         cursorY,
         isDragging: dragRef.current.active,
@@ -907,89 +1134,160 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
   return (
     <section
       aria-label="Planetary Satellite Observation Viewport"
-      className="border border-[var(--border-grid)] bg-[var(--bg-console)] flex flex-col"
+      className="border border-[var(--border-strong)] bg-[var(--bg-console)] flex flex-col"
     >
+      {/* ROW 1: MAP HEADER & PROJECTION SWITCH */}
       <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 border-b border-[var(--border-grid)] bg-[var(--bg-panel)]">
         <div className="flex items-center gap-3 min-w-0">
           <h2 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-primary)] whitespace-nowrap">
             Orbital Observation Stage
           </h2>
-          <span className="text-xs font-mono-tabular text-[var(--accent-mint)] truncate">
+          <span className="text-xs font-mono-tabular text-[var(--accent-mint)] font-medium truncate">
             {layer.cardinal} {layer.azimuthLabel} · {layer.phenomenon}
           </span>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 shrink-0">
+        <div
+          className="flex border border-[var(--border-strong)] bg-[var(--bg-obsidian)] shrink-0"
+          role="group"
+          aria-label="Projection Mode"
+        >
           <button
             type="button"
-            onClick={onToggleSolarTerminator}
-            aria-pressed={showSolarTerminator}
-            title="Toggle real-time UTC Solar Terminators shadow overlay (Shortcut: T)"
-            className={`px-2.5 py-1 border text-xs font-mono-tabular flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
-              showSolarTerminator
-                ? 'bg-[var(--accent-amber)] border-[var(--accent-amber)] text-[var(--bg-obsidian)] font-semibold'
-                : 'bg-[var(--bg-obsidian)] border-[var(--border-grid)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--accent-amber)]'
+            onClick={() => onToggleProjection('globe')}
+            aria-pressed={projection === 'globe'}
+            className={`px-3 py-1.5 text-xs font-mono-tabular flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 border-r border-[var(--border-grid)] ${
+              projection === 'globe'
+                ? 'bg-[var(--accent-mint)] text-[var(--bg-obsidian)] font-semibold'
+                : 'bg-[var(--bg-control)] text-[var(--text-primary)] hover:text-[var(--accent-mint)]'
             }`}
           >
-            <Sun className="w-3.5 h-3.5" aria-hidden="true" />
-            <span>Solar Terminators</span>
+            <Globe className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>3D Globe</span>
           </button>
-
           <button
             type="button"
-            onClick={onToggleAnomalyHeatmap}
-            aria-pressed={showAnomalyHeatmap}
-            title="Toggle D3 Climate Anomaly Heatmap overlay (Shortcut: A)"
-            className={`px-2.5 py-1 border text-xs font-mono-tabular flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
-              showAnomalyHeatmap
-                ? 'bg-[var(--accent-coral)] border-[var(--accent-coral)] text-[var(--bg-obsidian)] font-semibold'
-                : 'bg-[var(--bg-obsidian)] border-[var(--border-grid)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--accent-coral)]'
+            onClick={() => onToggleProjection('plate')}
+            aria-pressed={projection === 'plate'}
+            className={`px-3 py-1.5 text-xs font-mono-tabular flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
+              projection === 'plate'
+                ? 'bg-[var(--accent-mint)] text-[var(--bg-obsidian)] font-semibold'
+                : 'bg-[var(--bg-control)] text-[var(--text-primary)] hover:text-[var(--accent-mint)]'
             }`}
           >
-            <Thermometer className="w-3.5 h-3.5" aria-hidden="true" />
-            <span>Climate Anomaly Heatmap</span>
+            <MapIcon className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>EPSG:4326</span>
           </button>
-
-          <div
-            className="flex border border-[var(--border-grid)] bg-[var(--bg-obsidian)]"
-            role="group"
-            aria-label="Projection Mode"
-          >
-            <button
-              type="button"
-              onClick={() => onToggleProjection('globe')}
-              aria-pressed={projection === 'globe'}
-              className={`px-2.5 py-1 text-xs font-mono-tabular flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
-                projection === 'globe'
-                  ? 'bg-[var(--accent-mint)] text-[var(--bg-obsidian)] font-semibold'
-                  : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
-              }`}
-            >
-              <Globe className="w-3.5 h-3.5" aria-hidden="true" />
-              <span>3D Globe</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => onToggleProjection('plate')}
-              aria-pressed={projection === 'plate'}
-              className={`px-2.5 py-1 text-xs font-mono-tabular flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
-                projection === 'plate'
-                  ? 'bg-[var(--accent-mint)] text-[var(--bg-obsidian)] font-semibold'
-                  : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
-              }`}
-            >
-              <MapIcon className="w-3.5 h-3.5" aria-hidden="true" />
-              <span>EPSG:4326</span>
-            </button>
-          </div>
         </div>
       </div>
 
-      {/* Aspect-aware display container (2:1 natural Plate Carrée footprint, ResizeObserver-driven) */}
-      <div className="bg-[var(--bg-obsidian)] p-3">
+      {/* ROW 2: DEDICATED HIGH-CONTRAST OVERLAY CONTROL STRIP */}
+      <div
+        role="group"
+        aria-label="Geospatial Map Layer Overlays"
+        className="px-4 py-2.5 border-b border-[var(--border-strong)] bg-[var(--bg-obsidian)] flex flex-col gap-2"
+      >
+        <div className="flex items-center justify-between gap-2 text-[11px] font-mono-tabular">
+          <span className="font-semibold uppercase tracking-wider text-[var(--text-primary)]">
+            Geospatial Map Overlays
+          </span>
+          <span className="text-[var(--text-muted)] tabular-nums">
+            {[showWindFlow, showSolarTerminator, showAnomalyHeatmap, showStormRadar].filter(Boolean).length} / 4
+            ACTIVE
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2">
+          <TactileSwitchToggle
+            checked={showWindFlow}
+            onToggle={onToggleWindFlow}
+            label="Wind Flow"
+            shortcut="V"
+            accent="mint"
+            icon={<Wind className="w-3.5 h-3.5" />}
+            title="Toggle animated Atmospheric Wind Flow streamlines on Globe & Map (Shortcut: V)"
+            compact
+          />
+          <TactileSwitchToggle
+            checked={showSolarTerminator}
+            onToggle={onToggleSolarTerminator}
+            label="Terminators"
+            shortcut="T"
+            accent="amber"
+            icon={<Sun className="w-3.5 h-3.5" />}
+            title="Toggle real-time UTC Solar Terminators shadow overlay (Shortcut: T)"
+            compact
+          />
+          <TactileSwitchToggle
+            checked={showAnomalyHeatmap}
+            onToggle={onToggleAnomalyHeatmap}
+            label="Anomaly Map"
+            shortcut="A"
+            accent="coral"
+            icon={<Thermometer className="w-3.5 h-3.5" />}
+            title="Toggle D3 Climate Anomaly Heatmap overlay (Shortcut: A)"
+            compact
+          />
+          <TactileSwitchToggle
+            checked={showStormRadar}
+            onToggle={onToggleStormRadar}
+            label="Storm Radar"
+            shortcut="S"
+            accent="coral"
+            icon={<Radar className="w-3.5 h-3.5" />}
+            title="Toggle D3 swirling barometric Storm Radar pressure-contour overlay (Shortcut: S)"
+            compact
+          />
+        </div>
+
+        <div className="pt-2 border-t border-[var(--border-grid)] grid grid-cols-1 sm:grid-cols-[190px_minmax(0,1fr)_128px] items-center gap-2.5 text-[11px] font-mono-tabular">
+          <label
+            htmlFor="stormRadarIntensitySlider"
+            className="uppercase tracking-wider font-semibold text-[var(--text-primary)] whitespace-nowrap"
+          >
+            Storm Radar Intensity
+          </label>
+          <input
+            id="stormRadarIntensitySlider"
+            type="range"
+            min={0}
+            max={2.0}
+            step={0.05}
+            value={stormRadarIntensity}
+            onChange={(e) => onChangeStormRadarIntensity(parseFloat(e.target.value))}
+            className="scientific-slider block"
+            aria-label="Storm Radar pressure contour depth and swirl intensity multiplier"
+          />
+          <span
+            className={`text-right font-semibold tabular-nums whitespace-nowrap ${
+              !showStormRadar || stormRadarIntensity <= 0.01
+                ? 'text-[var(--text-muted)]'
+                : stormRadarIntensity >= 1.35
+                ? 'text-[var(--accent-coral)]'
+                : stormRadarIntensity >= 0.85
+                ? 'text-[var(--accent-amber)]'
+                : 'text-[var(--accent-mint)]'
+            }`}
+          >
+            {stormRadarIntensity.toFixed(2)}× ·{' '}
+            {!showStormRadar
+              ? 'STANDBY'
+              : stormRadarIntensity <= 0.01
+              ? 'CALM'
+              : stormRadarIntensity < 0.7
+              ? 'LOW'
+              : stormRadarIntensity <= 1.35
+              ? 'ACTIVE'
+              : 'EXTREME'}
+          </span>
+        </div>
+      </div>
+
+      {/* Aspect-aware display container (ResizeObserver-driven for crisp 3D Globe & 2:1 EPSG:4326 scaling) */}
+      <div className="bg-[var(--bg-obsidian)] p-2.5 lg:p-3">
         <div
           ref={containerRef}
-          className="relative w-full aspect-[2/1] min-h-[220px] border border-[var(--border-grid)] bg-[var(--bg-obsidian)] overflow-hidden"
+          className="relative w-full aspect-[2/1] min-h-[240px] max-h-[390px] xl:max-h-[430px] border border-[var(--border-strong)] bg-[var(--bg-obsidian)] overflow-hidden"
         >
           {projection === 'globe' ? (
             <canvas
@@ -1016,9 +1314,24 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
             />
           )}
 
+          <canvas
+            ref={windCanvasRef}
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 w-full h-full block z-10"
+          />
+
+          <canvas
+            ref={stormRadarCanvasRef}
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 w-full h-full block z-[11]"
+          />
+
           {probeInfo && !probeInfo.isDragging && (() => {
             const tooltipW = 228;
-            const tooltipH = (showSolarTerminator ? 98 : 78) + (probeInfo.windSpeedMs !== null ? 20 : 0);
+            const tooltipH =
+              (showSolarTerminator ? 98 : 78) +
+              (probeInfo.windSpeedMs !== null ? 20 : 0) +
+              (probeInfo.stormSlpHpa !== null ? 20 : 0);
             const margin = 14;
             const left =
               probeInfo.cursorX + margin + tooltipW > containerSize.width
@@ -1091,6 +1404,24 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
                     </span>
                   </div>
                 )}
+                {probeInfo.stormSlpHpa !== null && (
+                  <div className="mt-1 flex items-center justify-between text-[10px] text-[var(--text-muted)]">
+                    <span>STORM RADAR SLP</span>
+                    <span
+                      className={`font-semibold ${
+                        probeInfo.stormSlpHpa <= 980
+                          ? 'text-[var(--accent-coral)]'
+                          : probeInfo.stormSlpHpa <= 996
+                          ? 'text-[var(--accent-amber)]'
+                          : 'text-[var(--accent-mint)]'
+                      }`}
+                    >
+                      {probeInfo.stormSlpHpa} hPa (
+                      {probeInfo.stormSlpHpa - AMBIENT_SLP_HPA >= 0 ? '+' : ''}
+                      {probeInfo.stormSlpHpa - AMBIENT_SLP_HPA})
+                    </span>
+                  </div>
+                )}
                 {showSolarTerminator && (
                   <div className="mt-1 pt-1 border-t border-[var(--border-grid)] flex items-center justify-between text-[10px]">
                     <span
@@ -1116,104 +1447,187 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
         </div>
       </div>
 
-      {showSolarTerminator && (
+      {(showWindFlow && windField) ||
+      showSolarTerminator ||
+      showStormRadar ||
+      (showAnomalyHeatmap && anomalyField) ? (
         <div
-          aria-label="Live UTC Solar Terminator Ephemeris"
-          className="flex flex-wrap items-center justify-between gap-3 px-4 py-2 border-t border-[var(--border-grid)] bg-[var(--bg-panel)] text-[11px] font-mono-tabular"
+          aria-label="Active Geospatial Layer Legends"
+          className="grid grid-cols-1 xl:grid-cols-2 gap-2 px-3.5 py-2 border-t border-[var(--border-grid)] bg-[var(--bg-panel)] text-[11px] font-mono-tabular"
         >
-          <div className="flex items-center gap-3 flex-wrap">
-            <span className="text-[var(--accent-amber)] font-semibold whitespace-nowrap">
-              SOLAR TERMINATOR · {solarPosition.utcTimeStr}
-            </span>
-            <span className="text-[var(--text-muted)] flex items-center gap-1.5 whitespace-nowrap">
-              <span className="inline-block w-3 h-[2px] bg-[var(--accent-amber)]" aria-hidden="true" />
-              0° Sunset / Sunrise
-            </span>
-            <span className="text-[var(--text-muted)] flex items-center gap-1.5 whitespace-nowrap">
-              <span
-                className="inline-block w-3 border-t border-dashed border-[var(--text-muted)]"
-                aria-hidden="true"
-              />
-              -6° Civil Twilight
-            </span>
-          </div>
-
-          <div className="flex items-center gap-4 text-[var(--text-muted)] flex-wrap">
-            <span>
-              SUBSOLAR{' '}
-              <strong className="text-[var(--accent-amber)]">
-                {formatCoordLat(solarPosition.subsolarLatDeg)}{' '}
-                {formatCoordLon(solarPosition.subsolarLonDeg)}
-              </strong>
-            </span>
-            <span>
-              DECL{' '}
-              <strong className="text-[var(--text-primary)]">
-                {solarPosition.declinationDeg >= 0 ? '+' : ''}
-                {solarPosition.declinationDeg.toFixed(2)}°
-              </strong>
-            </span>
-          </div>
-        </div>
-      )}
-
-      {showAnomalyHeatmap && anomalyField && (
-        <div
-          aria-label="D3 Temperature Variance Heatmap Scale"
-          className="flex flex-wrap items-center justify-between gap-3 px-4 py-2 border-t border-[var(--border-grid)] bg-[var(--bg-panel)] text-[11px] font-mono-tabular"
-        >
-          <div className="flex items-center gap-3 flex-wrap">
-            <span className="text-[var(--accent-coral)] font-semibold whitespace-nowrap">
-              D3 THERMAL VARIANCE (ΔT °C)
-            </span>
-            <div className="flex items-center gap-1.5">
-              <span className="text-[var(--text-muted)]">{ANOMALY_MIN_C.toFixed(1)}°C</span>
-              <div
-                className={`flex border border-[var(--border-grid)] h-3 ${nightMode ? 'opacity-70' : ''}`}
-                role="img"
-                aria-label="D3 RdBu diverging temperature anomaly ramp from -3.5 to +3.5 degrees Celsius"
-              >
-                {legendStops.map((stop) => (
-                  <span
-                    key={stop.tempC}
-                    title={`${stop.tempC >= 0 ? '+' : ''}${stop.tempC.toFixed(1)}°C`}
-                    className="w-5 h-full block"
-                    style={{ backgroundColor: stop.color }}
-                  />
-                ))}
+          {showWindFlow && windField && (
+            <div
+              aria-label="Animated Wind Flow Velocity Legend"
+              className="border border-[var(--border-grid)] bg-[var(--bg-obsidian)] px-2.5 py-1.5 flex flex-wrap items-center justify-between gap-2"
+            >
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[var(--accent-mint)] font-semibold whitespace-nowrap">
+                  WIND FLOW
+                </span>
+                <div className="flex items-center gap-2 flex-wrap">
+                  {WIND_SPEED_LEGEND_STOPS.map((stop) => (
+                    <span key={stop.label} className="inline-flex items-center gap-1 text-[var(--text-muted)]">
+                      <span
+                        className="inline-block w-2.5 h-[2px]"
+                        style={{ backgroundColor: nightMode ? stop.nightColor : stop.color }}
+                        aria-hidden="true"
+                      />
+                      {stop.label}
+                    </span>
+                  ))}
+                </div>
               </div>
-              <span className="text-[var(--text-muted)]">+{ANOMALY_MAX_C.toFixed(1)}°C</span>
+              <span className="text-[var(--text-muted)] shrink-0">
+                PEAK{' '}
+                <strong className="text-[var(--accent-mint)]">
+                  {windField.globalMaxMs.toFixed(1)} m/s
+                </strong>
+              </span>
             </div>
-          </div>
+          )}
 
-          <div className="flex items-center gap-4 text-[var(--text-muted)]">
-            <span>
-              MEAN{' '}
-              <strong className="text-[var(--text-primary)]">
-                {anomalyField.stats.meanC >= 0 ? '+' : ''}
-                {anomalyField.stats.meanC.toFixed(2)}°C
-              </strong>
-            </span>
-            <span>
-              PEAK{' '}
-              <strong className="text-[var(--accent-coral)]">
-                +{anomalyField.stats.maxC.toFixed(2)}°C
-              </strong>
-            </span>
-            <span>
-              MIN{' '}
-              <strong className="text-[var(--accent-mint)]">
-                {anomalyField.stats.minC >= 0 ? '+' : ''}
-                {anomalyField.stats.minC.toFixed(2)}°C
-              </strong>
-            </span>
-          </div>
+          {showSolarTerminator && (
+            <div
+              aria-label="Live UTC Solar Terminator Ephemeris"
+              className="border border-[var(--border-grid)] bg-[var(--bg-obsidian)] px-2.5 py-1.5 flex flex-wrap items-center justify-between gap-2"
+            >
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[var(--accent-amber)] font-semibold whitespace-nowrap">
+                  TERMINATOR · {solarPosition.utcTimeStr}
+                </span>
+                <span className="text-[var(--text-muted)] flex items-center gap-1 whitespace-nowrap">
+                  <span className="inline-block w-2.5 h-[2px] bg-[var(--accent-amber)]" aria-hidden="true" />
+                  0° Horizon
+                </span>
+                <span className="text-[var(--text-muted)] flex items-center gap-1 whitespace-nowrap">
+                  <span
+                    className="inline-block w-2.5 border-t border-dashed border-[var(--text-muted)]"
+                    aria-hidden="true"
+                  />
+                  -6° Twilight
+                </span>
+              </div>
+              <div className="flex items-center gap-3 text-[var(--text-muted)] shrink-0">
+                <span>
+                  SUB{' '}
+                  <strong className="text-[var(--accent-amber)]">
+                    {formatCoordLat(solarPosition.subsolarLatDeg)}{' '}
+                    {formatCoordLon(solarPosition.subsolarLonDeg)}
+                  </strong>
+                </span>
+                <span>
+                  DECL{' '}
+                  <strong className="text-[var(--text-primary)]">
+                    {solarPosition.declinationDeg >= 0 ? '+' : ''}
+                    {solarPosition.declinationDeg.toFixed(1)}°
+                  </strong>
+                </span>
+              </div>
+            </div>
+          )}
+
+          {showStormRadar && (
+            <div
+              aria-label="D3 Storm Radar Isobar Pressure Legend"
+              className="xl:col-span-2 border border-[var(--border-grid)] bg-[var(--bg-obsidian)] px-2.5 py-1.5 flex flex-wrap items-center justify-between gap-2"
+            >
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <span className="text-[var(--accent-coral)] font-semibold whitespace-nowrap">
+                  STORM RADAR (D3 ISOBARS)
+                </span>
+                <div className="flex items-center gap-2.5 flex-wrap">
+                  {STORM_RADAR_LEGEND_STOPS.map((stop) => (
+                    <span
+                      key={stop.pressureHpa}
+                      className="inline-flex items-center gap-1 text-[var(--text-muted)] whitespace-nowrap"
+                    >
+                      <span
+                        className="inline-block w-3"
+                        style={{
+                          borderTopWidth: '2px',
+                          borderTopStyle: stop.dashed ? 'dashed' : 'solid',
+                          borderTopColor: nightMode ? stop.nightColor : stop.color,
+                        }}
+                        aria-hidden="true"
+                      />
+                      {stop.label}
+                    </span>
+                  ))}
+                </div>
+              </div>
+              <div className="flex items-center gap-3 text-[var(--text-muted)] shrink-0">
+                <span>
+                  CORES <strong className="text-[var(--text-primary)]">{stormMetrics.activeCores}</strong>
+                </span>
+                <span>
+                  DEEPEST{' '}
+                  <strong className="text-[var(--accent-coral)]">
+                    {stormMetrics.deepestHpa} hPa
+                  </strong>
+                </span>
+              </div>
+            </div>
+          )}
+
+          {showAnomalyHeatmap && anomalyField && (
+            <div
+              aria-label="D3 Temperature Variance Heatmap Scale"
+              className="xl:col-span-2 border border-[var(--border-grid)] bg-[var(--bg-obsidian)] px-2.5 py-1.5 flex flex-wrap items-center justify-between gap-3"
+            >
+              <div className="flex items-center gap-3 flex-wrap">
+                <span className="text-[var(--accent-coral)] font-semibold whitespace-nowrap">
+                  D3 THERMAL VARIANCE (ΔT °C)
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[var(--text-muted)]">{ANOMALY_MIN_C.toFixed(1)}°C</span>
+                  <div
+                    className={`flex border border-[var(--border-strong)] h-3 ${nightMode ? 'opacity-75' : ''}`}
+                    role="img"
+                    aria-label="D3 RdBu diverging temperature anomaly ramp from -3.5 to +3.5 degrees Celsius"
+                  >
+                    {legendStops.map((stop) => (
+                      <span
+                        key={stop.tempC}
+                        title={`${stop.tempC >= 0 ? '+' : ''}${stop.tempC.toFixed(1)}°C`}
+                        className="w-5 h-full block"
+                        style={{ backgroundColor: stop.color }}
+                      />
+                    ))}
+                  </div>
+                  <span className="text-[var(--text-muted)]">+{ANOMALY_MAX_C.toFixed(1)}°C</span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-4 text-[var(--text-muted)] shrink-0">
+                <span>
+                  MEAN{' '}
+                  <strong className="text-[var(--text-primary)]">
+                    {anomalyField.stats.meanC >= 0 ? '+' : ''}
+                    {anomalyField.stats.meanC.toFixed(2)}°C
+                  </strong>
+                </span>
+                <span>
+                  PEAK{' '}
+                  <strong className="text-[var(--accent-coral)]">
+                    +{anomalyField.stats.maxC.toFixed(2)}°C
+                  </strong>
+                </span>
+                <span>
+                  MIN{' '}
+                  <strong className="text-[var(--accent-mint)]">
+                    {anomalyField.stats.minC >= 0 ? '+' : ''}
+                    {anomalyField.stats.minC.toFixed(2)}°C
+                  </strong>
+                </span>
+              </div>
+            </div>
+          )}
         </div>
-      )}
+      ) : null}
 
-      <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2 border-t border-[var(--border-grid)] bg-[var(--bg-console)] text-xs font-mono-tabular">
-        <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Climate Region Bookmarks">
-          <span className="text-[var(--text-muted)] mr-1">TARGETS:</span>
+      <div className="flex flex-wrap xl:flex-nowrap items-center justify-between gap-2.5 px-3.5 py-2 border-t border-[var(--border-grid)] bg-[var(--bg-console)] text-xs font-mono-tabular">
+        <div className="flex flex-wrap items-center gap-1.5 min-w-0" role="group" aria-label="Climate Region Bookmarks">
+          <span className="text-[var(--text-primary)] font-semibold mr-1 shrink-0">TARGETS:</span>
           {CLIMATE_BOOKMARKS.map((bm) => (
             <button
               key={bm.id}
@@ -1222,10 +1636,11 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
                 setGlobeCenter({ lat: bm.lat, lon: bm.lon });
                 onSelectBookmark(bm.layerKey, bm.label);
               }}
-              className={`px-2 py-0.5 border text-[11px] cursor-pointer whitespace-nowrap ${
+              aria-pressed={activeLayerKey === bm.layerKey}
+              className={`px-2 py-1 border text-[11px] cursor-pointer whitespace-nowrap ${
                 activeLayerKey === bm.layerKey
-                  ? 'border-[var(--accent-mint)] text-[var(--accent-mint)] bg-[var(--bg-panel)]'
-                  : 'border-[var(--border-grid)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--accent-mint)]'
+                  ? 'border-[var(--accent-mint)] text-[var(--bg-obsidian)] bg-[var(--accent-mint)] font-semibold'
+                  : 'border-[var(--border-strong)] bg-[var(--bg-control)] text-[var(--text-primary)] hover:border-[var(--accent-mint)]'
               }`}
             >
               {bm.label}
@@ -1233,17 +1648,19 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
           ))}
         </div>
 
-        <div className="flex items-center gap-4 text-[var(--text-muted)]">
+        <div className="flex items-center gap-3 text-[11px] text-[var(--text-muted)] shrink-0 whitespace-nowrap">
           <span>
             {probeInfo
-              ? `PROBE ${probeInfo.lat} ${probeInfo.lon} · ANOMALY ${probeInfo.anomalyPct}% · ΔT ${
+              ? `PROBE ${probeInfo.lat} ${probeInfo.lon} · ${probeInfo.anomalyPct}% · ${
                   probeInfo.deltaC >= 0 ? '+' : ''
                 }${probeInfo.deltaC.toFixed(2)}°C`
               : projection === 'globe'
-              ? 'DRAG GLOBE TO ORBIT · HOVER TO PROBE'
+              ? 'DRAG GLOBE · HOVER TO PROBE'
               : 'HOVER MAP TO PROBE LAT/LON'}
           </span>
-          <span className="text-[var(--text-primary)]">{isLoading ? 'SYNCING...' : dataSource}</span>
+          <span className="text-[var(--text-primary)] font-semibold border-l border-[var(--border-grid)] pl-3">
+            {isLoading ? 'SYNCING...' : dataSource}
+          </span>
         </div>
       </div>
     </section>

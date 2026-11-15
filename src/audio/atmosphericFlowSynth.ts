@@ -60,6 +60,7 @@ export class AtmosphericFlowSynth {
 
   private isStarted = false;
   private isEnabled = true;
+  private turbulenceMultiplier = 1.0;
   private currentIntensity = 0.28;
   private currentOceanic = 0.65;
   private currentTurbulence = 0.35;
@@ -101,6 +102,18 @@ export class AtmosphericFlowSynth {
         this.schedulerId = null;
       }
     }
+  }
+
+  public getTurbulenceMultiplier(): number {
+    return this.turbulenceMultiplier;
+  }
+
+  public setTurbulenceMultiplier(multiplier: number): void {
+    const clamped = Math.max(0, Math.min(2.5, Number.isFinite(multiplier) ? multiplier : 1.0));
+    this.turbulenceMultiplier = clamped;
+    const effectiveTurb = Math.min(1.6, this.currentTurbulence * Math.max(0.25, clamped));
+    this.bedFilter.Q.setTargetAtTime(0.8 + effectiveTurb * 1.4, this.ctx.currentTime, 0.08);
+    this.applyOutputGain();
   }
 
   public start(): void {
@@ -154,25 +167,31 @@ export class AtmosphericFlowSynth {
     this.currentRelativeBearingRad = ((telemetry.bearingDeg - listenerHeadingDeg) * Math.PI) / 180;
 
     const now = this.ctx.currentTime;
+    const effectiveTurb = Math.min(
+      1.6,
+      telemetry.turbulence * Math.max(0.25, this.turbulenceMultiplier)
+    );
     // Open the sub-air swell cutoff from deep 240Hz rumble up to airy 1150Hz oceanic roar
     const bedCutoff = 240 + telemetry.intensity * 920;
     this.bedFilter.frequency.setTargetAtTime(bedCutoff, now, 0.12);
-    this.bedFilter.Q.setTargetAtTime(0.8 + telemetry.turbulence * 1.4, now, 0.12);
+    this.bedFilter.Q.setTargetAtTime(0.8 + effectiveTurb * 1.4, now, 0.12);
 
     this.applyOutputGain();
   }
 
   private applyOutputGain(): void {
     const now = this.ctx.currentTime;
-    if (!this.isStarted || !this.isEnabled) {
+    if (!this.isStarted || !this.isEnabled || this.turbulenceMultiplier <= 0.005) {
       this.masterGain.gain.setTargetAtTime(0.0, now, 0.08);
       return;
     }
 
-    // Quiet baseline air floor (0.045) swells cleanly to rich wind floor (~0.36) in high-wind ocean zones
-    const target =
+    // Quiet baseline air floor (0.045) swells cleanly to rich wind floor (~0.36) in high-wind ocean zones,
+    // scaled independently by the user's Wind Turbulence multiplier [0.0..2.5]
+    const baseTarget =
       0.045 + this.currentIntensity * 0.315 * (0.45 + 0.55 * this.currentOceanic);
-    this.masterGain.gain.setTargetAtTime(target, now, 0.1);
+    const target = Math.min(0.95, baseTarget * this.turbulenceMultiplier);
+    this.masterGain.gain.setTargetAtTime(target, now, 0.08);
   }
 
   private startGrainScheduler(): void {
@@ -185,10 +204,28 @@ export class AtmosphericFlowSynth {
   }
 
   private emitGrainCluster(): void {
-    if (!this.isStarted || !this.isEnabled || this.ctx.state !== 'running') return;
+    if (
+      !this.isStarted ||
+      !this.isEnabled ||
+      this.turbulenceMultiplier <= 0.01 ||
+      this.ctx.state !== 'running'
+    ) {
+      return;
+    }
 
-    // 1 grain in calm zones; 2-3 overlapping wind-shear grains in high-wind oceanic corridors
-    const grainCount = this.currentIntensity > 0.65 ? 3 : this.currentIntensity > 0.3 ? 2 : 1;
+    const mult = this.turbulenceMultiplier;
+    const effectiveIntensity = Math.min(1.5, this.currentIntensity * (0.45 + 0.55 * mult));
+    const effectiveTurbulence = Math.min(1.6, this.currentTurbulence * Math.max(0.25, mult));
+
+    // 1 grain in calm zones; 2-4 overlapping wind-shear grains when turbulence emphasizes high-wind corridors
+    const grainCount =
+      effectiveIntensity > 0.95
+        ? 4
+        : effectiveIntensity > 0.65
+        ? 3
+        : effectiveIntensity > 0.3
+        ? 2
+        : 1;
 
     for (let g = 0; g < grainCount; g++) {
       this.grainSeq = (this.grainSeq + 1) >>> 0;
@@ -211,19 +248,22 @@ export class AtmosphericFlowSynth {
       const bp = this.ctx.createBiquadFilter();
       bp.type = 'bandpass';
       const formantHz =
-        280 + this.currentIntensity * 1380 + (r2 - 0.5) * (240 + this.currentTurbulence * 640);
-      bp.frequency.setValueAtTime(Math.max(160, Math.min(3400, formantHz)), now);
-      bp.Q.setValueAtTime(1.5 + this.currentTurbulence * 2.4, now);
+        220 + this.currentIntensity * 1020 + (r2 - 0.5) * (180 + effectiveTurbulence * 420);
+      bp.frequency.setValueAtTime(Math.max(150, Math.min(1750, formantHz)), now);
+      bp.Q.setValueAtTime(0.9 + effectiveTurbulence * 1.1, now);
 
       const env = this.ctx.createGain();
-      const peakAmp = 0.14 + this.currentIntensity * 0.32;
+      const peakAmp = Math.min(
+        0.46,
+        (0.1 + this.currentIntensity * 0.2) * Math.max(0.15, Math.min(2.0, mult))
+      );
       env.gain.setValueAtTime(0.0001, now);
       env.gain.linearRampToValueAtTime(peakAmp, now + duration * 0.42);
       env.gain.exponentialRampToValueAtTime(0.0001, now + duration);
 
       const panner = this.ctx.createStereoPanner();
       const windPan = Math.sin(this.currentRelativeBearingRad) * 0.62;
-      const scatter = (r1 - 0.5) * (0.45 + this.currentTurbulence * 0.5);
+      const scatter = (r1 - 0.5) * (0.45 + effectiveTurbulence * 0.5);
       panner.pan.setValueAtTime(Math.max(-0.95, Math.min(0.95, windPan + scatter)), now);
 
       src.connect(bp);

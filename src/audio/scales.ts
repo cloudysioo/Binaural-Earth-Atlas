@@ -30,7 +30,7 @@ export function semitoneToFrequency(rootFreq: number, semitones: number): number
 function buildScaleTable(mode: ScaleMode): number[] {
   const { intervals, rootHz } = SCALE_DEFINITIONS[mode];
   const table: number[] = [];
-  for (let octave = 0; octave < 3; octave++) {
+  for (let octave = 0; octave < 2; octave++) {
     for (const interval of intervals) {
       const semitones = octave * 12 + interval;
       table.push(Number(semitoneToFrequency(rootHz, semitones).toFixed(3)));

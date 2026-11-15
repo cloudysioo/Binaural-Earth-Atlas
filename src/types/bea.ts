@@ -126,14 +126,29 @@ export interface TelemetryPoint {
   anomaly: number;
 }
 
+export interface SolarStormLogDetails {
+  kpIndex: number;
+  stormScale: string;
+  auroralPotentialPct: number;
+  chimeHz: number;
+  freqDeltaHz: number;
+  affectedFreqRangeHz: string;
+}
+
 export interface LogEntry {
   id: string;
   timestamp: string;
   message: string;
   tone: 'info' | 'mint' | 'coral' | 'warn';
+  category?: 'telemetry' | 'solar_storm';
+  solarDetails?: SolarStormLogDetails;
 }
 
-export type AudioEventKind = 'climate_anomaly_spike' | 'high_intensity_motion';
+export type AudioEventKind =
+  | 'climate_anomaly_spike'
+  | 'high_intensity_motion'
+  | 'solar_activity'
+  | 'solar_flare';
 
 export interface AudioEventEntry {
   id: string;

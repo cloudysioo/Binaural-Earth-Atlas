@@ -145,9 +145,9 @@ export const OnboardingOverlay: React.FC<OnboardingOverlayProps> = ({
       aria-labelledby="onboarding-heading"
       aria-describedby="onboarding-body"
     >
-      <div className="w-full max-w-3xl max-h-[92vh] overflow-y-auto border border-[var(--accent-mint)] bg-[var(--bg-console)] text-[var(--text-primary)] flex flex-col">
+      <div className="w-full max-w-4xl max-h-[92vh] overflow-y-auto border border-[var(--accent-mint)] bg-[var(--bg-console)] text-[var(--text-primary)] flex flex-col">
         {/* TOP DIALOG BAR */}
-        <div className="flex items-center justify-between gap-4 px-4 py-3 border-b border-[var(--border-grid)] bg-[var(--bg-panel)]">
+        <div className="flex items-center justify-between gap-4 px-5 py-3 border-b border-[var(--border-grid)] bg-[var(--bg-panel)]">
           <div className="flex items-center gap-2.5 min-w-0">
             <BrandLogo size={24} nightMode={nightMode} />
             <span className="text-xs font-mono-tabular text-[var(--accent-mint)] font-semibold whitespace-nowrap">
@@ -166,7 +166,7 @@ export const OnboardingOverlay: React.FC<OnboardingOverlayProps> = ({
             type="button"
             onClick={() => onClose(false)}
             aria-label="Close onboarding guide"
-            className="px-2 py-1 border border-[var(--border-grid)] bg-[var(--bg-obsidian)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--accent-mint)] text-xs font-mono-tabular flex items-center gap-1 cursor-pointer shrink-0"
+            className="px-2.5 py-1 border border-[var(--border-strong)] bg-[var(--bg-control)] text-[var(--text-primary)] hover:border-[var(--accent-mint)] hover:text-[var(--accent-mint)] text-xs font-mono-tabular flex items-center gap-1 cursor-pointer shrink-0"
           >
             <X className="w-3.5 h-3.5" aria-hidden="true" />
             <span>Skip</span>
