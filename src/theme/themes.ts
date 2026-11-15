@@ -1,4 +1,4 @@
-export type ThemeId = 'obsidian' | 'aurora' | 'amber' | 'abyssal' | 'night';
+export type ThemeId = 'obsidian' | 'aurora' | 'amber' | 'abyssal' | 'solar-flare' | 'night';
 
 export interface BeaThemePalette {
   id: ThemeId;
@@ -341,6 +341,74 @@ export const BEA_THEMES: Record<ThemeId, BeaThemePalette> = {
     },
   },
 
+  'solar-flare': {
+    id: 'solar-flare',
+    label: 'Solar Flare',
+    shortLabel: 'Flare',
+    description: 'High-contrast coronal neon yellow and deep ion magenta telemetry on pure black',
+    isNightFilter: false,
+    cssVars: {
+      '--bg-obsidian': '#030205',
+      '--bg-console': '#09040E',
+      '--bg-panel': '#14081D',
+      '--bg-control': '#0F0616',
+      '--border-grid': '#5C114C',
+      '--border-strong': '#A6177E',
+      '--accent-mint': '#FFE600',
+      '--accent-coral': '#FF2A9D',
+      '--accent-amber': '#FFA200',
+      '--text-primary': '#FEFCE8',
+      '--text-muted': '#E9B5DE',
+    },
+    titleGradient: ['#FFE600', '#FFA200', '#FF2A9D'],
+    canvas: {
+      bg: '#030205',
+      bgRgb: [3, 2, 5],
+      bgTooltip: 'rgba(3, 2, 5, 0.96)',
+      panelBg: '#14081D',
+      gridLine: 'rgba(166, 23, 126, 0.48)',
+      axisLine: 'rgba(92, 17, 76, 0.85)',
+      borderStrong: '#A6177E',
+      textPrimary: '#FEFCE8',
+      textMuted: '#E9B5DE',
+      primary: '#FFE600',
+      primaryRgb: '255, 230, 0',
+      secondary: '#FF2A9D',
+      secondaryRgb: '255, 42, 157',
+      tertiary: '#FFA200',
+      tertiaryRgb: '255, 162, 0',
+      sky: '#D946EF',
+      skyRgb: '217, 70, 239',
+      coastline: 'rgba(254, 249, 195, 0.72)',
+      countryBorder: 'rgba(255, 42, 157, 0.34)',
+      terminatorHalo: 'rgba(255, 230, 0, 0.34)',
+      terminatorLine: '#FFE600',
+      terminatorTwilight: 'rgba(217, 70, 239, 0.50)',
+      terminatorBadgeBg: 'rgba(3, 2, 5, 0.92)',
+      auroraCorona: ['rgba(255, 230, 0, 0.95)', 'rgba(255, 42, 157, 0.62)', 'rgba(166, 23, 126, 0.28)'],
+      auroraGlitchRgb: '255, 42, 157',
+      auroraPrimaryRgb: '255, 230, 0',
+      flarePrimaryRgb: '255, 42, 157',
+      flareBrightRgb: '255, 245, 157',
+      windStops: ['#9D174D', '#D946EF', '#FFA200', '#FFE600'],
+      stormStops: ['#A6177E', '#E879F9', '#FF2A9D', '#FFA200', '#FFE600'],
+      scatterLayers: {
+        north: '#FFE600',
+        east: '#FFA200',
+        south: '#FF2A9D',
+        west: '#E879F9',
+      },
+      logoStart: '#FFE600',
+      logoMid: '#FFA200',
+      logoEnd: '#FF2A9D',
+      logoCup: '#09040E',
+      logoHighlight: '#FEF9C3',
+      logoLandStroke: '#FDE047',
+      logoLandEast: '#F5D0FE',
+      logoGrid: '#C026D3',
+    },
+  },
+
   night: {
     id: 'night',
     label: 'Night Crimson',
@@ -410,7 +478,14 @@ export const BEA_THEMES: Record<ThemeId, BeaThemePalette> = {
   },
 };
 
-export const THEME_ORDER: ThemeId[] = ['obsidian', 'aurora', 'amber', 'abyssal', 'night'];
+export const THEME_ORDER: ThemeId[] = [
+  'obsidian',
+  'aurora',
+  'amber',
+  'abyssal',
+  'solar-flare',
+  'night',
+];
 
 export function isThemeId(value: unknown): value is ThemeId {
   return (
@@ -419,6 +494,7 @@ export function isThemeId(value: unknown): value is ThemeId {
       value === 'aurora' ||
       value === 'amber' ||
       value === 'abyssal' ||
+      value === 'solar-flare' ||
       value === 'night')
   );
 }
