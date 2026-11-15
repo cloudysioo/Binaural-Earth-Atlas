@@ -1517,8 +1517,8 @@ export default function App() {
         role="banner"
         className="border-b border-[var(--border-strong)] bg-[var(--bg-console)]"
       >
-        <div className="max-w-[1680px] mx-auto w-full px-4 lg:px-5 py-2.5 flex flex-wrap xl:flex-nowrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3 min-w-0 shrink-0">
+        <div className="max-w-[1680px] mx-auto w-full px-3 sm:px-4 lg:px-5 py-2.5 flex flex-wrap xl:flex-nowrap items-center justify-between gap-2.5 sm:gap-3">
+          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 shrink-0">
             <BrandLogo size={32} nightMode={observatoryNightMode} theme={activeTheme} />
             <h1 className="text-base sm:text-lg font-bold tracking-tight whitespace-nowrap">
               <span
@@ -1558,20 +1558,20 @@ export default function App() {
             <span className="hidden 2xl:inline text-[var(--text-muted)]">{utcClock}</span>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0 flex-wrap sm:flex-nowrap">
+          <div className="w-full xl:w-auto grid grid-cols-2 sm:flex sm:items-center gap-2 shrink-0">
             <button
               ref={guideButtonRef}
               type="button"
               onClick={() => setIsOnboardingOpen(true)}
               aria-haspopup="dialog"
-              className="min-h-[34px] px-2.5 py-1.5 border border-[var(--border-strong)] bg-[var(--bg-control)] text-xs font-mono-tabular text-[var(--text-primary)] hover:border-[var(--accent-mint)] hover:text-[var(--accent-mint)] flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+              className="min-h-[38px] sm:min-h-[34px] px-2.5 py-1.5 border border-[var(--border-strong)] bg-[var(--bg-control)] text-xs font-mono-tabular text-[var(--text-primary)] hover:border-[var(--accent-mint)] hover:text-[var(--accent-mint)] flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
             >
-              <HelpCircle className="w-3.5 h-3.5" aria-hidden="true" />
+              <HelpCircle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
               <span>Guide</span>
             </button>
 
             <div
-              className="min-h-[34px] px-2 border border-[var(--border-strong)] bg-[var(--bg-control)] hover:border-[var(--accent-mint)] focus-within:border-[var(--accent-mint)] flex items-center gap-1.5 shrink-0"
+              className="min-h-[38px] sm:min-h-[34px] w-full sm:w-auto min-w-0 px-2 border border-[var(--border-strong)] bg-[var(--bg-control)] hover:border-[var(--accent-mint)] focus-within:border-[var(--accent-mint)] flex items-center gap-1.5 shrink-0"
               title={`Observatory Color Theme: ${activeTheme.label} — ${activeTheme.description}`}
             >
               <Palette className="w-3.5 h-3.5 text-[var(--accent-mint)] shrink-0" aria-hidden="true" />
@@ -1584,7 +1584,7 @@ export default function App() {
                     handleSelectTheme(nextVal);
                   }
                 }}
-                className="bg-transparent text-xs font-mono-tabular text-[var(--text-primary)] focus:outline-none cursor-pointer pr-1 py-1 whitespace-nowrap"
+                className="w-full min-w-0 bg-transparent text-xs font-mono-tabular text-[var(--text-primary)] focus:outline-none cursor-pointer pr-1 py-1 whitespace-nowrap"
               >
                 {THEME_ORDER.map((id) => (
                   <option
@@ -1605,6 +1605,7 @@ export default function App() {
               accent="mint"
               icon={<Speech className="w-3.5 h-3.5" />}
               title="Toggle spoken screen-reader accessibility telemetry updates"
+              className="w-full sm:w-auto"
             />
 
             <TactileSwitchToggle
@@ -1615,13 +1616,14 @@ export default function App() {
               accent="amber"
               icon={<Moon className="w-3.5 h-3.5" />}
               title="Observatory Night Mode (N) — High-contrast deep red palette & reduced canvas bloom"
+              className="w-full sm:w-auto"
             />
 
             <button
               type="button"
               onClick={() => void handleTogglePlay()}
               aria-pressed={isPlaying}
-              className={`min-h-[34px] px-4 py-1.5 border text-xs font-bold uppercase tracking-wider flex items-center gap-2 cursor-pointer whitespace-nowrap ${
+              className={`col-span-2 sm:col-span-1 min-h-[42px] sm:min-h-[34px] px-4 py-1.5 border text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap ${
                 isPlaying
                   ? 'bg-[var(--accent-coral)] border-[var(--accent-coral)] text-[var(--bg-obsidian)] hover:opacity-90'
                   : 'bg-[var(--accent-mint)] border-[var(--accent-mint)] text-[var(--bg-obsidian)] hover:opacity-90'
@@ -1640,6 +1642,27 @@ export default function App() {
               )}
             </button>
           </div>
+        </div>
+
+        {/* MOBILE & TABLET TELEMETRY SUB-ROW */}
+        <div className="flex lg:hidden items-center justify-between gap-2 px-3 sm:px-4 py-1.5 border-t border-[var(--border-grid)] bg-[var(--bg-obsidian)] text-[11px] font-mono-tabular whitespace-nowrap">
+          <span className="text-[var(--text-muted)]">
+            EPOCH <strong className="text-[var(--accent-mint)] font-semibold">{activeDateStr}</strong>
+          </span>
+          <span className="text-[var(--border-strong)]" aria-hidden="true">|</span>
+          <span className="text-[var(--text-muted)]">
+            HDG{' '}
+            <strong className="text-[var(--text-primary)] font-semibold">
+              {String(Math.round(listenerAngle)).padStart(3, '0')}° {activeLayer.shortCardinal}
+            </strong>
+          </span>
+          <span className="text-[var(--border-strong)]" aria-hidden="true">|</span>
+          <span className="text-[var(--text-muted)]">
+            KP{' '}
+            <strong className="text-[var(--accent-amber)] font-semibold">
+              {solarTelemetry.kpIndex.toFixed(1)}
+            </strong>
+          </span>
         </div>
       </header>
 
@@ -1684,8 +1707,8 @@ export default function App() {
             aria-label="Satellite Archive Chronology and Acoustic Controls"
             className="border border-[var(--border-strong)] bg-[var(--bg-console)] flex flex-col"
           >
-            <div className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5 border-b border-[var(--border-grid)] bg-[var(--bg-panel)]">
-              <div className="flex flex-wrap items-center gap-3 min-w-0">
+            <div className="flex flex-wrap items-center justify-between gap-2 px-3 sm:px-3.5 py-2.5 border-b border-[var(--border-grid)] bg-[var(--bg-panel)]">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 min-w-0">
                 <h2 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-primary)] whitespace-nowrap">
                   Archive Sequencer &amp; Synthesis
                 </h2>
@@ -1694,7 +1717,7 @@ export default function App() {
                 </span>
               </div>
 
-              <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto shrink-0">
                 {/* Archive Year Switcher (2026 / 2025 / 2007) */}
                 <div
                   className="flex border border-[var(--border-strong)] bg-[var(--bg-obsidian)]"
@@ -1707,7 +1730,7 @@ export default function App() {
                       type="button"
                       onClick={() => void handleChangeYear(yr)}
                       aria-pressed={archiveYear === yr}
-                      className={`px-3 py-1 text-xs font-mono-tabular cursor-pointer whitespace-nowrap ${
+                      className={`px-3 py-1.5 sm:py-1 text-xs font-mono-tabular cursor-pointer whitespace-nowrap ${
                         idx < ARCHIVE_YEARS.length - 1 ? 'border-r border-[var(--border-grid)]' : ''
                       } ${
                         archiveYear === yr
@@ -1724,15 +1747,15 @@ export default function App() {
                   type="button"
                   onClick={() => void handleTestSpatialAudio()}
                   disabled={isTestingSpatial}
-                  className="px-3 py-1 border border-[var(--border-strong)] bg-[var(--bg-control)] text-[var(--text-primary)] hover:border-[var(--accent-mint)] hover:text-[var(--accent-mint)] disabled:opacity-60 text-xs font-mono-tabular flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                  className="flex-1 sm:flex-initial justify-center px-3 py-1.5 sm:py-1 border border-[var(--border-strong)] bg-[var(--bg-control)] text-[var(--text-primary)] hover:border-[var(--accent-mint)] hover:text-[var(--accent-mint)] disabled:opacity-60 text-xs font-mono-tabular flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
                 >
-                  <Radio className="w-3.5 h-3.5" aria-hidden="true" />
+                  <Radio className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
                   <span>{isTestingSpatial ? 'Sweeping N→E→S→W' : 'Test Spatial Sweep'}</span>
                 </button>
               </div>
             </div>
 
-            <div className="p-3.5 flex flex-col gap-3">
+            <div className="p-3 sm:p-3.5 flex flex-col gap-3">
               {/* Row 1: Unified Timeline + Seasonal Benchmarks & Master Gain */}
               <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_248px] gap-3 items-stretch">
                 {/* Timeline Scrubber + Quick Benchmarks */}
@@ -1758,7 +1781,7 @@ export default function App() {
                   </div>
 
                   <div
-                    className="grid grid-cols-5 gap-1.5 pt-1"
+                    className="flex flex-wrap sm:grid sm:grid-cols-5 gap-1.5 pt-1"
                     role="group"
                     aria-label={`${archiveYear} Seasonal Benchmarks`}
                   >
@@ -1772,7 +1795,7 @@ export default function App() {
                           onClick={() => void handleScrubMonth(bm.monthIndex)}
                           title={bm.title}
                           aria-pressed={isCurrent}
-                          className={`py-1 px-2 border text-[11px] font-mono-tabular font-semibold cursor-pointer whitespace-nowrap ${
+                          className={`flex-1 min-w-[68px] py-2 sm:py-1 px-2 border text-[11px] font-mono-tabular font-semibold cursor-pointer whitespace-nowrap text-center ${
                             isCurrent
                               ? isSep
                                 ? 'bg-[var(--accent-coral)] border-[var(--accent-coral)] text-[var(--bg-obsidian)]'
@@ -1862,7 +1885,7 @@ export default function App() {
                           type="button"
                           onClick={() => handleScaleModeChange(mode)}
                           aria-pressed={scaleMode === mode}
-                          className={`py-1.5 px-2 text-[11px] font-mono-tabular uppercase border cursor-pointer whitespace-nowrap ${
+                          className={`py-2 sm:py-1.5 px-2 text-[11px] font-mono-tabular uppercase border cursor-pointer whitespace-nowrap ${
                             scaleMode === mode
                               ? 'bg-[var(--accent-mint)] border-[var(--accent-mint)] text-[var(--bg-obsidian)] font-semibold'
                               : 'bg-[var(--bg-control)] border-[var(--border-strong)] text-[var(--text-primary)] hover:border-[var(--accent-mint)]'
@@ -1889,7 +1912,7 @@ export default function App() {
                         onClick={() => handleReverbModeChange('vacuum')}
                         aria-pressed={reverbMode === 'vacuum'}
                         title="Dry spatial signal with zero reverberation"
-                        className={`py-1.5 px-2 text-[11px] font-mono-tabular uppercase border cursor-pointer whitespace-nowrap truncate ${
+                        className={`py-2 sm:py-1.5 px-2 text-[11px] font-mono-tabular uppercase border cursor-pointer whitespace-nowrap truncate ${
                           reverbMode === 'vacuum'
                             ? 'bg-[var(--accent-mint)] border-[var(--accent-mint)] text-[var(--bg-obsidian)] font-semibold'
                             : 'bg-[var(--bg-control)] border-[var(--border-strong)] text-[var(--text-primary)] hover:border-[var(--accent-mint)]'
@@ -1902,7 +1925,7 @@ export default function App() {
                         onClick={() => handleReverbModeChange('atmospheric')}
                         aria-pressed={reverbMode === 'atmospheric'}
                         title="2.8s stereo planetary atmospheric convolution reverb"
-                        className={`py-1.5 px-2 text-[11px] font-mono-tabular uppercase border cursor-pointer whitespace-nowrap truncate ${
+                        className={`py-2 sm:py-1.5 px-2 text-[11px] font-mono-tabular uppercase border cursor-pointer whitespace-nowrap truncate ${
                           reverbMode === 'atmospheric'
                             ? 'bg-[var(--accent-mint)] border-[var(--accent-mint)] text-[var(--bg-obsidian)] font-semibold'
                             : 'bg-[var(--bg-control)] border-[var(--border-strong)] text-[var(--text-primary)] hover:border-[var(--accent-mint)]'
@@ -2004,40 +2027,44 @@ export default function App() {
             aria-label="Observatory Reference Console"
             className="border border-[var(--border-strong)] bg-[var(--bg-console)] flex flex-col"
           >
-            <div className="flex flex-wrap items-center justify-between border-b border-[var(--border-strong)] bg-[var(--bg-panel)] px-3">
-              <div className="flex flex-wrap items-center" role="tablist" aria-label="Reference Panels">
+            <div className="flex flex-wrap items-center justify-between border-b border-[var(--border-strong)] bg-[var(--bg-panel)] px-0 sm:px-3">
+              <div
+                className="grid grid-cols-2 sm:flex sm:flex-wrap items-center w-full sm:w-auto"
+                role="tablist"
+                aria-label="Reference Panels"
+              >
                 {(
                   [
-                    ['log', 'Mission Telemetry Log'],
+                    ['log', 'Telemetry Log', 'Mission Telemetry Log'],
                     [
                       'audio-events',
-                      audioEvents.length > 0
-                        ? `Audio Events (${audioEvents.length})`
-                        : 'Audio Events',
+                      audioEvents.length > 0 ? `Events (${audioEvents.length})` : 'Audio Events',
+                      audioEvents.length > 0 ? `Audio Events (${audioEvents.length})` : 'Audio Events',
                     ],
-                    ['manual', 'Keyboard Shortcuts'],
-                    ['specs', 'Cardinal & GIBS Specs'],
-                  ] as Array<[ReferenceTab, string]>
-                ).map(([tabKey, label]) => (
+                    ['manual', 'Shortcuts', 'Keyboard Shortcuts'],
+                    ['specs', 'GIBS Specs', 'Cardinal & GIBS Specs'],
+                  ] as Array<[ReferenceTab, string, string]>
+                ).map(([tabKey, mobileLabel, desktopLabel]) => (
                   <button
                     key={tabKey}
                     type="button"
                     role="tab"
                     aria-selected={activeTab === tabKey}
                     onClick={() => setActiveTab(tabKey)}
-                    className={`px-3.5 py-2.5 text-xs font-mono-tabular border-r border-[var(--border-grid)] cursor-pointer whitespace-nowrap ${
+                    className={`px-3 sm:px-3.5 py-2.5 text-xs font-mono-tabular border-r border-b sm:border-b-0 border-[var(--border-grid)] cursor-pointer whitespace-nowrap truncate text-left sm:text-center ${
                       activeTab === tabKey
                         ? tabKey === 'audio-events'
-                          ? 'bg-[var(--bg-obsidian)] text-[var(--accent-coral)] font-semibold border-b-2 border-b-[var(--accent-coral)]'
-                          : 'bg-[var(--bg-obsidian)] text-[var(--accent-mint)] font-semibold border-b-2 border-b-[var(--accent-mint)]'
+                          ? 'bg-[var(--bg-obsidian)] text-[var(--accent-coral)] font-semibold border-b-2 sm:border-b-2 border-b-[var(--accent-coral)]'
+                          : 'bg-[var(--bg-obsidian)] text-[var(--accent-mint)] font-semibold border-b-2 sm:border-b-2 border-b-[var(--accent-mint)]'
                         : 'text-[var(--text-primary)] hover:bg-[var(--bg-control)] hover:text-[var(--accent-mint)]'
                     }`}
                   >
-                    {label}
+                    <span className="sm:hidden">{mobileLabel}</span>
+                    <span className="hidden sm:inline">{desktopLabel}</span>
                   </button>
                 ))}
               </div>
-              <div className="flex flex-wrap items-center gap-2 py-1.5">
+              <div className="flex flex-wrap items-center gap-2 px-3 sm:px-0 py-1.5 w-full sm:w-auto justify-between sm:justify-end">
                 {activeTab === 'log' && (
                   <div
                     className="flex border border-[var(--border-strong)] bg-[var(--bg-obsidian)]"
@@ -2659,7 +2686,7 @@ export default function App() {
         role="contentinfo"
         className="border-t border-[var(--border-grid)] bg-[var(--bg-console)]"
       >
-        <div className="max-w-[1680px] mx-auto w-full px-4 lg:px-5 py-2 flex flex-wrap items-center justify-between gap-2 text-xs font-mono-tabular text-[var(--text-muted)]">
+        <div className="max-w-[1680px] mx-auto w-full px-3 sm:px-4 lg:px-5 py-2.5 sm:py-2 flex flex-wrap items-center justify-between gap-2 text-[11px] sm:text-xs font-mono-tabular text-[var(--text-muted)]">
           <span>ORTHOGRAPHIC 3D + EPSG:4326 · WEB AUDIO HRTF BINAURAL ENGINE</span>
           <span>LIVE NASA GIBS 2025–2026 &amp; 2007 ARCHIVE · WCAG AAA KEYBOARD ACCESSIBLE</span>
         </div>

@@ -269,8 +269,18 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
     lat: 45,
     lon: -45,
   });
-  const dragRef = useRef<{ active: boolean; x: number; y: number }>({
+  const dragRef = useRef<{
+    active: boolean;
+    moved: boolean;
+    startX: number;
+    startY: number;
+    x: number;
+    y: number;
+  }>({
     active: false,
+    moved: false,
+    startX: 0,
+    startY: 0,
     x: 0,
     y: 0,
   });
@@ -1003,13 +1013,17 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
     };
   };
 
-  const handlePlateMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
+  const probePlateAtPoint = (
+    clientX: number,
+    clientY: number,
+    canvas: HTMLCanvasElement
+  ) => {
+    const rect = canvas.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
-    const cursorX = e.clientX - rect.left;
-    const cursorY = e.clientY - rect.top;
-    const px = (cursorX / rect.width) * e.currentTarget.width;
-    const py = (cursorY / rect.height) * e.currentTarget.height;
+    const cursorX = clientX - rect.left;
+    const cursorY = clientY - rect.top;
+    const px = (cursorX / rect.width) * canvas.width;
+    const py = (cursorY / rect.height) * canvas.height;
     const fitted = fittedRectRef.current;
 
     if (
@@ -1046,31 +1060,23 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
     });
   };
 
-  const handleGlobePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    dragRef.current = { active: true, x: e.clientX, y: e.clientY };
-    e.currentTarget.setPointerCapture(e.pointerId);
-    setProbeInfo((prev) => (prev ? { ...prev, isDragging: true } : null));
+  const handlePlatePointer = (e: React.PointerEvent<HTMLCanvasElement> | React.MouseEvent<HTMLCanvasElement>) => {
+    probePlateAtPoint(e.clientX, e.clientY, e.currentTarget);
   };
 
-  const handleGlobePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    let nextCenter = globeCenter;
-    if (dragRef.current.active) {
-      const dx = e.clientX - dragRef.current.x;
-      const dy = e.clientY - dragRef.current.y;
-      dragRef.current = { active: true, x: e.clientX, y: e.clientY };
-      nextCenter = {
-        lon: ((((globeCenter.lon - dx * 0.45 + 180) % 360) + 360) % 360) - 180,
-        lat: Math.max(-85, Math.min(85, globeCenter.lat + dy * 0.4)),
-      };
-      setGlobeCenter(nextCenter);
-    }
-
-    const rect = e.currentTarget.getBoundingClientRect();
+  const probeGlobeAtPoint = (
+    clientX: number,
+    clientY: number,
+    canvas: HTMLCanvasElement,
+    center: { lat: number; lon: number },
+    isDragging: boolean
+  ) => {
+    const rect = canvas.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
-    const cursorX = e.clientX - rect.left;
-    const cursorY = e.clientY - rect.top;
-    const w = e.currentTarget.width;
-    const h = e.currentTarget.height;
+    const cursorX = clientX - rect.left;
+    const cursorY = clientY - rect.top;
+    const w = canvas.width;
+    const h = canvas.height;
     const px = (cursorX / rect.width) * w;
     const py = (cursorY / rect.height) * h;
     const R = Math.min(w, h) * 0.43;
@@ -1080,8 +1086,8 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
 
     if (rhoSq <= 1) {
       const cosC = Math.sqrt(Math.max(0, 1 - rhoSq));
-      const phi0 = (nextCenter.lat * Math.PI) / 180;
-      const lam0 = (nextCenter.lon * Math.PI) / 180;
+      const phi0 = (center.lat * Math.PI) / 180;
+      const lam0 = (center.lon * Math.PI) / 180;
       const sinPhi0 = Math.sin(phi0);
       const cosPhi0 = Math.cos(phi0);
 
@@ -1109,11 +1115,56 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
         stormSlpHpa: telemetry.stormSlpHpa,
         cursorX,
         cursorY,
-        isDragging: dragRef.current.active,
+        isDragging,
       });
     } else {
       setProbeInfo(null);
     }
+  };
+
+  const handleGlobePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    dragRef.current = {
+      active: true,
+      moved: false,
+      startX: e.clientX,
+      startY: e.clientY,
+      x: e.clientX,
+      y: e.clientY,
+    };
+    e.currentTarget.setPointerCapture(e.pointerId);
+    probeGlobeAtPoint(e.clientX, e.clientY, e.currentTarget, globeCenter, false);
+  };
+
+  const handleGlobePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    let nextCenter = globeCenter;
+    let isActivelyDragging = false;
+    if (dragRef.current.active) {
+      const dist = Math.hypot(
+        e.clientX - dragRef.current.startX,
+        e.clientY - dragRef.current.startY
+      );
+      if (dist > 3 || dragRef.current.moved) {
+        dragRef.current.moved = true;
+        isActivelyDragging = true;
+      }
+      const dx = e.clientX - dragRef.current.x;
+      const dy = e.clientY - dragRef.current.y;
+      dragRef.current = {
+        ...dragRef.current,
+        active: true,
+        x: e.clientX,
+        y: e.clientY,
+      };
+      if (dragRef.current.moved) {
+        nextCenter = {
+          lon: ((((globeCenter.lon - dx * 0.45 + 180) % 360) + 360) % 360) - 180,
+          lat: Math.max(-85, Math.min(85, globeCenter.lat + dy * 0.4)),
+        };
+        setGlobeCenter(nextCenter);
+      }
+    }
+
+    probeGlobeAtPoint(e.clientX, e.clientY, e.currentTarget, nextCenter, isActivelyDragging);
   };
 
   const handleGlobePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -1134,12 +1185,12 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
       className="border border-[var(--border-strong)] bg-[var(--bg-console)] flex flex-col"
     >
       {/* ROW 1: MAP HEADER & PROJECTION SWITCH */}
-      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 border-b border-[var(--border-grid)] bg-[var(--bg-panel)]">
-        <div className="flex items-center gap-3 min-w-0">
+      <div className="flex flex-wrap items-center justify-between gap-2.5 sm:gap-3 px-3 sm:px-4 py-2.5 border-b border-[var(--border-grid)] bg-[var(--bg-panel)]">
+        <div className="flex flex-wrap sm:flex-nowrap items-center gap-x-3 gap-y-0.5 min-w-0">
           <h2 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-primary)] whitespace-nowrap">
             Orbital Observation Stage
           </h2>
-          <span className="text-xs font-mono-tabular text-[var(--accent-mint)] font-medium truncate">
+          <span className="text-[11px] sm:text-xs font-mono-tabular text-[var(--accent-mint)] font-medium truncate max-w-full">
             {layer.cardinal} {layer.azimuthLabel} · {layer.phenomenon}
           </span>
         </div>
@@ -1153,7 +1204,7 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
             type="button"
             onClick={() => onToggleProjection('globe')}
             aria-pressed={projection === 'globe'}
-            className={`px-3 py-1.5 text-xs font-mono-tabular flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 border-r border-[var(--border-grid)] ${
+            className={`px-3 py-2 sm:py-1.5 text-xs font-mono-tabular flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 border-r border-[var(--border-grid)] ${
               projection === 'globe'
                 ? 'bg-[var(--accent-mint)] text-[var(--bg-obsidian)] font-semibold'
                 : 'bg-[var(--bg-control)] text-[var(--text-primary)] hover:text-[var(--accent-mint)]'
@@ -1166,7 +1217,7 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
             type="button"
             onClick={() => onToggleProjection('plate')}
             aria-pressed={projection === 'plate'}
-            className={`px-3 py-1.5 text-xs font-mono-tabular flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
+            className={`px-3 py-2 sm:py-1.5 text-xs font-mono-tabular flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
               projection === 'plate'
                 ? 'bg-[var(--accent-mint)] text-[var(--bg-obsidian)] font-semibold'
                 : 'bg-[var(--bg-control)] text-[var(--text-primary)] hover:text-[var(--accent-mint)]'
@@ -1182,7 +1233,7 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
       <div
         role="group"
         aria-label="Geospatial Map Layer Overlays"
-        className="px-4 py-2.5 border-b border-[var(--border-strong)] bg-[var(--bg-obsidian)] flex flex-col gap-2"
+        className="px-3 sm:px-4 py-2.5 border-b border-[var(--border-strong)] bg-[var(--bg-obsidian)] flex flex-col gap-2"
       >
         <div className="flex items-center justify-between gap-2 text-[11px] font-mono-tabular">
           <span className="font-semibold uppercase tracking-wider text-[var(--text-primary)]">
@@ -1194,7 +1245,7 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
           </span>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2">
+        <div className="grid grid-cols-1 min-[400px]:grid-cols-2 xl:grid-cols-4 gap-2">
           <TactileSwitchToggle
             checked={showWindFlow}
             onToggle={onToggleWindFlow}
@@ -1237,13 +1288,37 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
           />
         </div>
 
-        <div className="pt-2 border-t border-[var(--border-grid)] grid grid-cols-1 sm:grid-cols-[190px_minmax(0,1fr)_128px] items-center gap-2.5 text-[11px] font-mono-tabular">
-          <label
-            htmlFor="stormRadarIntensitySlider"
-            className="uppercase tracking-wider font-semibold text-[var(--text-primary)] whitespace-nowrap"
-          >
-            Storm Radar Intensity
-          </label>
+        <div className="pt-2 border-t border-[var(--border-grid)] flex flex-col sm:grid sm:grid-cols-[190px_minmax(0,1fr)_128px] sm:items-center gap-2 sm:gap-2.5 text-[11px] font-mono-tabular">
+          <div className="flex items-center justify-between gap-2 sm:contents">
+            <label
+              htmlFor="stormRadarIntensitySlider"
+              className="sm:order-1 uppercase tracking-wider font-semibold text-[var(--text-primary)] whitespace-nowrap"
+            >
+              Storm Radar Intensity
+            </label>
+            <span
+              className={`sm:order-3 text-right font-semibold tabular-nums whitespace-nowrap ${
+                !showStormRadar || stormRadarIntensity <= 0.01
+                  ? 'text-[var(--text-muted)]'
+                  : stormRadarIntensity >= 1.35
+                  ? 'text-[var(--accent-coral)]'
+                  : stormRadarIntensity >= 0.85
+                  ? 'text-[var(--accent-amber)]'
+                  : 'text-[var(--accent-mint)]'
+              }`}
+            >
+              {stormRadarIntensity.toFixed(2)}× ·{' '}
+              {!showStormRadar
+                ? 'STANDBY'
+                : stormRadarIntensity <= 0.01
+                ? 'CALM'
+                : stormRadarIntensity < 0.7
+                ? 'LOW'
+                : stormRadarIntensity <= 1.35
+                ? 'ACTIVE'
+                : 'EXTREME'}
+            </span>
+          </div>
           <input
             id="stormRadarIntensitySlider"
             type="range"
@@ -1252,31 +1327,9 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
             step={0.05}
             value={stormRadarIntensity}
             onChange={(e) => onChangeStormRadarIntensity(parseFloat(e.target.value))}
-            className="scientific-slider block"
+            className="scientific-slider block sm:order-2"
             aria-label="Storm Radar pressure contour depth and swirl intensity multiplier"
           />
-          <span
-            className={`text-right font-semibold tabular-nums whitespace-nowrap ${
-              !showStormRadar || stormRadarIntensity <= 0.01
-                ? 'text-[var(--text-muted)]'
-                : stormRadarIntensity >= 1.35
-                ? 'text-[var(--accent-coral)]'
-                : stormRadarIntensity >= 0.85
-                ? 'text-[var(--accent-amber)]'
-                : 'text-[var(--accent-mint)]'
-            }`}
-          >
-            {stormRadarIntensity.toFixed(2)}× ·{' '}
-            {!showStormRadar
-              ? 'STANDBY'
-              : stormRadarIntensity <= 0.01
-              ? 'CALM'
-              : stormRadarIntensity < 0.7
-              ? 'LOW'
-              : stormRadarIntensity <= 1.35
-              ? 'ACTIVE'
-              : 'EXTREME'}
-          </span>
         </div>
       </div>
 
@@ -1297,16 +1350,17 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
                 dragRef.current.active = false;
                 setProbeInfo(null);
               }}
-              className="w-full h-full block cursor-grab active:cursor-grabbing bg-[var(--bg-obsidian)]"
+              className="w-full h-full block cursor-grab active:cursor-grabbing touch-none select-none bg-[var(--bg-obsidian)]"
               aria-label={`Interactive 3D orthographic Earth globe showing ${layer.phenomenon} for ${dateString}`}
             />
           ) : (
             <canvas
               id="satellite-map"
               ref={mapCanvasRef}
-              onMouseMove={handlePlateMove}
+              onPointerDown={handlePlatePointer}
+              onMouseMove={handlePlatePointer}
               onMouseLeave={() => setProbeInfo(null)}
-              className="w-full h-full block cursor-crosshair bg-[var(--bg-obsidian)]"
+              className="w-full h-full block cursor-crosshair select-none bg-[var(--bg-obsidian)]"
               aria-label={`Plate Carree map displaying ${layer.phenomenon} for ${dateString}`}
             />
           )}
@@ -1324,20 +1378,22 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
           />
 
           {probeInfo && !probeInfo.isDragging && (() => {
-            const tooltipW = 228;
+            const tooltipW = Math.min(228, Math.max(176, containerSize.width - 16));
             const tooltipH =
               (showSolarTerminator ? 98 : 78) +
               (probeInfo.windSpeedMs !== null ? 20 : 0) +
               (probeInfo.stormSlpHpa !== null ? 20 : 0);
             const margin = 14;
-            const left =
+            const rawLeft =
               probeInfo.cursorX + margin + tooltipW > containerSize.width
-                ? Math.max(8, probeInfo.cursorX - tooltipW - margin)
+                ? probeInfo.cursorX - tooltipW - margin
                 : probeInfo.cursorX + margin;
-            const top =
+            const left = Math.max(8, Math.min(Math.max(8, containerSize.width - tooltipW - 8), rawLeft));
+            const rawTop =
               probeInfo.cursorY + margin + tooltipH > containerSize.height
-                ? Math.max(8, probeInfo.cursorY - tooltipH - margin)
-                : Math.max(8, probeInfo.cursorY + margin);
+                ? probeInfo.cursorY - tooltipH - margin
+                : probeInfo.cursorY + margin;
+            const top = Math.max(8, Math.min(Math.max(8, containerSize.height - tooltipH - 8), rawTop));
 
             const isHighAnomaly = probeInfo.anomalyPct >= 60;
             const isElevatedAnomaly = probeInfo.anomalyPct >= 35 && probeInfo.anomalyPct < 60;
@@ -1350,8 +1406,9 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
             return (
               <div
                 aria-hidden="true"
-                className="pointer-events-none absolute z-20 w-[228px] border px-2.5 py-2 font-mono-tabular text-[11px] leading-snug"
+                className="pointer-events-none absolute z-20 border px-2.5 py-2 font-mono-tabular text-[11px] leading-snug"
                 style={{
+                  width: `${tooltipW}px`,
                   left: `${left}px`,
                   top: `${top}px`,
                   borderColor: accentHex,
@@ -1621,9 +1678,15 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
         </div>
       ) : null}
 
-      <div className="flex flex-wrap xl:flex-nowrap items-center justify-between gap-2.5 px-3.5 py-2 border-t border-[var(--border-grid)] bg-[var(--bg-console)] text-xs font-mono-tabular">
-        <div className="flex flex-wrap items-center gap-1.5 min-w-0" role="group" aria-label="Climate Region Bookmarks">
-          <span className="text-[var(--text-primary)] font-semibold mr-1 shrink-0">TARGETS:</span>
+      <div className="flex flex-wrap xl:flex-nowrap items-center justify-between gap-2.5 px-3 sm:px-3.5 py-2.5 sm:py-2 border-t border-[var(--border-grid)] bg-[var(--bg-console)] text-xs font-mono-tabular">
+        <div
+          className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-1.5 w-full xl:w-auto min-w-0"
+          role="group"
+          aria-label="Climate Region Bookmarks"
+        >
+          <span className="col-span-2 sm:col-span-1 text-[var(--text-primary)] font-semibold sm:mr-1 shrink-0">
+            TARGETS:
+          </span>
           {CLIMATE_BOOKMARKS.map((bm) => (
             <button
               key={bm.id}
@@ -1633,7 +1696,7 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
                 onSelectBookmark(bm.layerKey, bm.label);
               }}
               aria-pressed={activeLayerKey === bm.layerKey}
-              className={`px-2 py-1 border text-[11px] cursor-pointer whitespace-nowrap ${
+              className={`px-2 py-1.5 sm:py-1 border text-[11px] text-center cursor-pointer whitespace-nowrap truncate ${
                 activeLayerKey === bm.layerKey
                   ? 'border-[var(--accent-mint)] text-[var(--bg-obsidian)] bg-[var(--accent-mint)] font-semibold'
                   : 'border-[var(--border-strong)] bg-[var(--bg-control)] text-[var(--text-primary)] hover:border-[var(--accent-mint)]'
@@ -1644,17 +1707,17 @@ export const SatelliteMapCanvas: React.FC<SatelliteMapCanvasProps> = ({
           ))}
         </div>
 
-        <div className="flex items-center gap-3 text-[11px] text-[var(--text-muted)] shrink-0 whitespace-nowrap">
-          <span>
+        <div className="flex flex-wrap sm:flex-nowrap items-center justify-between xl:justify-end gap-2 sm:gap-3 text-[11px] text-[var(--text-muted)] w-full xl:w-auto shrink-0 pt-2 xl:pt-0 border-t xl:border-t-0 border-[var(--border-grid)]">
+          <span className="truncate">
             {probeInfo
               ? `PROBE ${probeInfo.lat} ${probeInfo.lon} · ${probeInfo.anomalyPct}% · ${
                   probeInfo.deltaC >= 0 ? '+' : ''
                 }${probeInfo.deltaC.toFixed(2)}°C`
               : projection === 'globe'
-              ? 'DRAG GLOBE · HOVER TO PROBE'
-              : 'HOVER MAP TO PROBE LAT/LON'}
+              ? 'DRAG GLOBE · TAP/HOVER TO PROBE'
+              : 'TAP OR HOVER MAP TO PROBE'}
           </span>
-          <span className="text-[var(--text-primary)] font-semibold border-l border-[var(--border-grid)] pl-3">
+          <span className="text-[var(--text-primary)] font-semibold sm:border-l sm:border-[var(--border-grid)] sm:pl-3 shrink-0 whitespace-nowrap">
             {isLoading ? 'SYNCING...' : dataSource}
           </span>
         </div>

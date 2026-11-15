@@ -144,24 +144,24 @@ export const OnboardingOverlay: React.FC<OnboardingOverlayProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-4"
       style={{ backgroundColor: backdropColor }}
       role="dialog"
       aria-modal="true"
       aria-labelledby="onboarding-heading"
       aria-describedby="onboarding-body"
     >
-      <div className="w-full max-w-4xl max-h-[92vh] overflow-y-auto border border-[var(--accent-mint)] bg-[var(--bg-console)] text-[var(--text-primary)] flex flex-col">
+      <div className="w-full max-w-4xl max-h-[94dvh] overflow-y-auto border border-[var(--accent-mint)] bg-[var(--bg-console)] text-[var(--text-primary)] flex flex-col">
         {/* TOP DIALOG BAR */}
-        <div className="flex items-center justify-between gap-4 px-5 py-3 border-b border-[var(--border-grid)] bg-[var(--bg-panel)]">
-          <div className="flex items-center gap-2.5 min-w-0">
+        <div className="flex items-center justify-between gap-2 sm:gap-4 px-3 sm:px-5 py-2.5 sm:py-3 border-b border-[var(--border-grid)] bg-[var(--bg-panel)]">
+          <div className="flex items-center gap-2 sm:gap-2.5 min-w-0">
             <BrandLogo size={24} nightMode={activeTheme.isNightFilter} theme={activeTheme} />
-            <span className="text-xs font-mono-tabular text-[var(--accent-mint)] font-semibold whitespace-nowrap">
+            <span className="text-[11px] sm:text-xs font-mono-tabular text-[var(--accent-mint)] font-semibold whitespace-nowrap shrink-0">
               STEP 0{step + 1} / 04
             </span>
             <h2
               id="onboarding-heading"
-              className="text-sm font-semibold text-[var(--text-primary)] truncate"
+              className="text-xs sm:text-sm font-semibold text-[var(--text-primary)] truncate"
             >
               {STEP_TITLES[step]}
             </h2>
@@ -205,7 +205,7 @@ export const OnboardingOverlay: React.FC<OnboardingOverlayProps> = ({
         </nav>
 
         {/* STEP CONTENT BODY */}
-        <div id="onboarding-body" className="p-5 flex flex-col gap-4">
+        <div id="onboarding-body" className="p-3.5 sm:p-5 flex flex-col gap-3.5 sm:gap-4">
           {step === 0 && (
             <>
               <p className="text-sm text-[var(--text-primary)] leading-relaxed">
@@ -523,13 +523,13 @@ export const OnboardingOverlay: React.FC<OnboardingOverlayProps> = ({
         </div>
 
         {/* BOTTOM NAVIGATION FOOTER */}
-        <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 border-t border-[var(--border-grid)] bg-[var(--bg-panel)]">
-          <div className="flex items-center gap-2">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-3 px-3 sm:px-4 py-3 border-t border-[var(--border-grid)] bg-[var(--bg-panel)]">
+          <div className="grid grid-cols-2 sm:flex items-center gap-2 w-full sm:w-auto">
             <button
               type="button"
               onClick={() => goToStep(step - 1)}
               disabled={step === 0}
-              className="px-3 py-1.5 border border-[var(--border-grid)] bg-[var(--bg-obsidian)] text-xs font-mono-tabular text-[var(--text-primary)] hover:border-[var(--accent-mint)] disabled:opacity-40 cursor-pointer"
+              className="px-3 py-2 sm:py-1.5 border border-[var(--border-grid)] bg-[var(--bg-obsidian)] text-xs font-mono-tabular text-[var(--text-primary)] hover:border-[var(--accent-mint)] disabled:opacity-40 cursor-pointer text-center"
             >
               Previous
             </button>
@@ -537,25 +537,25 @@ export const OnboardingOverlay: React.FC<OnboardingOverlayProps> = ({
               <button
                 type="button"
                 onClick={() => goToStep(step + 1)}
-                className="px-4 py-1.5 border border-[var(--accent-mint)] bg-[var(--accent-mint)] text-[var(--bg-obsidian)] text-xs font-mono-tabular font-semibold hover:opacity-90 cursor-pointer"
+                className="px-4 py-2 sm:py-1.5 border border-[var(--accent-mint)] bg-[var(--accent-mint)] text-[var(--bg-obsidian)] text-xs font-mono-tabular font-semibold hover:opacity-90 cursor-pointer text-center"
               >
                 Next Step
               </button>
             )}
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 w-full sm:w-auto">
             <button
               type="button"
               onClick={() => onClose(false)}
-              className="px-3 py-1.5 border border-[var(--border-grid)] bg-[var(--bg-obsidian)] text-xs font-mono-tabular text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--accent-mint)] cursor-pointer whitespace-nowrap"
+              className="flex-1 sm:flex-initial px-3 py-2 sm:py-1.5 border border-[var(--border-grid)] bg-[var(--bg-obsidian)] text-xs font-mono-tabular text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--accent-mint)] cursor-pointer whitespace-nowrap text-center"
             >
               Enter Without Audio
             </button>
             <button
               type="button"
               onClick={() => onClose(!isPlaying)}
-              className="px-4 py-1.5 border border-[var(--accent-mint)] bg-[var(--accent-mint)] text-[var(--bg-obsidian)] text-xs font-semibold uppercase tracking-wider flex items-center gap-1.5 hover:opacity-90 cursor-pointer whitespace-nowrap"
+              className="flex-1 sm:flex-initial px-4 py-2 sm:py-1.5 border border-[var(--accent-mint)] bg-[var(--accent-mint)] text-[var(--bg-obsidian)] text-xs font-semibold uppercase tracking-wider flex items-center justify-center gap-1.5 hover:opacity-90 cursor-pointer whitespace-nowrap"
             >
               <Play className="w-3.5 h-3.5" aria-hidden="true" />
               <span>{isPlaying ? 'Return to Observatory' : 'Start Audio & Enter'}</span>

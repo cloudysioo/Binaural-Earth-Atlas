@@ -96,19 +96,19 @@ export const AudioSpectrumBar: React.FC<AudioSpectrumBarProps> = ({
   }, [analyser, isPlaying, isTestingSpatial, nightMode, theme]);
 
   return (
-    <div className="border border-[var(--border-strong)] bg-[var(--bg-console)] p-2.5">
-      <div className="flex items-center justify-between text-xs font-mono-tabular mb-1.5">
-        <span className="font-semibold text-[var(--text-primary)]">
+    <div className="border border-[var(--border-strong)] bg-[var(--bg-console)] p-2.5 min-w-0">
+      <div className="flex items-center justify-between gap-2 text-[11px] sm:text-xs font-mono-tabular mb-1.5 min-w-0">
+        <span className="font-semibold text-[var(--text-primary)] truncate min-w-0">
           LIVE BINAURAL OUTPUT OSCILLOSCOPE
         </span>
         <span
-          className={
+          className={`shrink-0 whitespace-nowrap ${
             isPlaying || isTestingSpatial
               ? 'text-[var(--accent-mint)] font-semibold'
               : 'text-[var(--text-muted)]'
-          }
+          }`}
         >
-          {isTestingSpatial ? 'CALIBRATION SIGNAL' : isPlaying ? 'HRTF STREAM' : 'STANDBY'}
+          {isTestingSpatial ? 'CALIBRATION' : isPlaying ? 'HRTF STREAM' : 'STANDBY'}
         </span>
       </div>
       <canvas

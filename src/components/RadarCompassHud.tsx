@@ -723,12 +723,12 @@ export const RadarCompassHud: React.FC<RadarCompassHudProps> = ({
         isSolarFlareFresh ? 'border-[var(--accent-coral)]' : 'border-[var(--border-strong)]'
       }`}
     >
-      <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--border-grid)] bg-[var(--bg-panel)]">
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-primary)]">
+      <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-[var(--border-grid)] bg-[var(--bg-panel)]">
+        <h2 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-primary)] truncate min-w-0">
           Binaural Head Compass
         </h2>
         <span
-          className={`text-xs font-mono-tabular ${
+          className={`text-[11px] sm:text-xs font-mono-tabular whitespace-nowrap shrink-0 ${
             isSolarFlareFresh
               ? 'text-[var(--accent-coral)] font-semibold'
               : isAuroralPulseFresh
@@ -774,7 +774,7 @@ export const RadarCompassHud: React.FC<RadarCompassHudProps> = ({
                 // ignore
               }
             }}
-            className="w-[196px] h-[196px] xl:w-[210px] xl:h-[210px] block cursor-crosshair"
+            className="w-[196px] h-[196px] xl:w-[210px] xl:h-[210px] block cursor-crosshair touch-none select-none"
             aria-label={`Interactive 360 degree binaural compass at ${paddedHeading}, nearest cardinal ${activeLayer.cardinal}`}
           />
         </div>
@@ -819,7 +819,7 @@ export const RadarCompassHud: React.FC<RadarCompassHudProps> = ({
                     onClick={() => onChangePanningMode('smooth360')}
                     aria-pressed={panningMode === 'smooth360'}
                     title="Continuous 360° circular-arc HRTF spatial interpolation (P)"
-                    className={`py-1.5 px-2 text-[11px] font-mono-tabular uppercase border-r border-[var(--border-grid)] cursor-pointer whitespace-nowrap truncate ${
+                    className={`py-2 sm:py-1.5 px-2 text-[11px] font-mono-tabular uppercase border-r border-[var(--border-grid)] cursor-pointer whitespace-nowrap truncate ${
                       panningMode === 'smooth360'
                         ? 'bg-[var(--accent-mint)] text-[var(--bg-obsidian)] font-semibold'
                         : 'bg-[var(--bg-control)] text-[var(--text-primary)] hover:text-[var(--accent-mint)]'
@@ -832,7 +832,7 @@ export const RadarCompassHud: React.FC<RadarCompassHudProps> = ({
                     onClick={() => onChangePanningMode('cardinal')}
                     aria-pressed={panningMode === 'cardinal'}
                     title="Snap strictly to North, East, South, West cardinal layers with 500ms crossfade (P)"
-                    className={`py-1.5 px-2 text-[11px] font-mono-tabular uppercase cursor-pointer whitespace-nowrap truncate ${
+                    className={`py-2 sm:py-1.5 px-2 text-[11px] font-mono-tabular uppercase cursor-pointer whitespace-nowrap truncate ${
                       panningMode === 'cardinal'
                         ? 'bg-[var(--accent-mint)] text-[var(--bg-obsidian)] font-semibold'
                         : 'bg-[var(--bg-control)] text-[var(--text-primary)] hover:text-[var(--accent-mint)]'
@@ -903,7 +903,7 @@ export const RadarCompassHud: React.FC<RadarCompassHudProps> = ({
               type="button"
               onClick={() => onSelectLayer(key)}
               aria-pressed={isSelected}
-              className={`px-2.5 py-2 text-left border font-mono-tabular text-xs cursor-pointer transition-colors ${
+              className={`px-2.5 py-2.5 sm:py-2 text-left border font-mono-tabular text-xs cursor-pointer transition-colors ${
                 isSelected
                   ? 'bg-[var(--bg-panel)] border-[var(--accent-mint)] text-[var(--accent-mint)]'
                   : 'bg-[var(--bg-control)] border-[var(--border-strong)] text-[var(--text-primary)] hover:border-[var(--accent-mint)]'

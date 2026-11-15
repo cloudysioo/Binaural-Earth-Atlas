@@ -72,8 +72,10 @@ export const TactileSwitchToggle: React.FC<TactileSwitchToggleProps> = ({
       aria-pressed={checked}
       aria-label={ariaLabel ?? `${label}: ${checked ? 'ON' : 'OFF'}`}
       title={title}
-      className={`min-w-0 border font-mono-tabular flex items-center justify-between gap-2 cursor-pointer whitespace-nowrap transition-colors ${
-        compact ? 'min-h-[30px] px-2.5 py-1 text-[11px]' : 'min-h-[34px] px-2.5 py-1.5 text-xs'
+      className={`min-w-0 border font-mono-tabular flex items-center justify-between gap-1.5 sm:gap-2 cursor-pointer whitespace-nowrap transition-colors ${
+        compact
+          ? 'min-h-[38px] sm:min-h-[30px] px-2 sm:px-2.5 py-1 text-[11px]'
+          : 'min-h-[40px] sm:min-h-[34px] px-2.5 py-1.5 text-xs'
       } ${
         checked
           ? `${palette.activeContainer} font-semibold`
@@ -93,7 +95,7 @@ export const TactileSwitchToggle: React.FC<TactileSwitchToggleProps> = ({
         )}
         <span className="truncate">{label}</span>
         {shortcut && (
-          <span className="text-[10px] text-[var(--text-muted)] font-normal shrink-0">
+          <span className="hidden sm:inline text-[10px] text-[var(--text-muted)] font-normal shrink-0">
             [{shortcut}]
           </span>
         )}

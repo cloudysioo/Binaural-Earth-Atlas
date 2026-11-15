@@ -44,6 +44,7 @@ body {
   font-family: var(--font-sans);
   min-height: 100vh;
   overflow-x: hidden;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .font-mono-tabular {
@@ -64,6 +65,7 @@ body {
   background: var(--bg-obsidian);
   border: 1px solid var(--border-strong);
   cursor: pointer;
+  touch-action: pan-y;
 }
 
 .scientific-slider:hover:not(:disabled) {
@@ -89,6 +91,22 @@ body {
   outline: 1px solid var(--accent-mint);
   border-radius: 0;
   cursor: pointer;
+}
+
+@media (pointer: coarse) {
+  .scientific-slider {
+    height: 12px;
+  }
+
+  .scientific-slider::-webkit-slider-thumb {
+    width: 20px;
+    height: 28px;
+  }
+
+  .scientific-slider::-moz-range-thumb {
+    width: 20px;
+    height: 28px;
+  }
 }
 
 .terminal-window::-webkit-scrollbar {

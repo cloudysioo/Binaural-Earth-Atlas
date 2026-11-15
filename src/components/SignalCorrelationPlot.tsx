@@ -215,14 +215,14 @@ export const SignalCorrelationPlot: React.FC<SignalCorrelationPlotProps> = ({
     [hoveredId, points]
   );
 
-  const handleSvgMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
+  const inspectSvgAtClientPoint = (svgEl: SVGSVGElement, clientX: number, clientY: number) => {
     if (points.length === 0) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const mx = e.clientX - rect.left - MARGIN.left;
-    const my = e.clientY - rect.top - MARGIN.top;
+    const rect = svgEl.getBoundingClientRect();
+    const mx = clientX - rect.left - MARGIN.left;
+    const my = clientY - rect.top - MARGIN.top;
 
     let closestId: string | null = null;
-    let bestDist = 18; // max snap radius in px
+    let bestDist = 20;
     for (let i = 0; i < points.length; i++) {
       const pt = points[i];
       const px = xScale(pt.brightness);
@@ -237,9 +237,9 @@ export const SignalCorrelationPlot: React.FC<SignalCorrelationPlotProps> = ({
   };
 
   return (
-    <div className="border border-[var(--border-strong)] bg-[var(--bg-console)] p-2.5 flex flex-col gap-2">
+    <div className="border border-[var(--border-strong)] bg-[var(--bg-console)] p-2.5 flex flex-col gap-2 min-w-0">
       {/* Compact quantitative statistics header */}
-      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono-tabular">
+      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 text-[11px] font-mono-tabular">
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-[var(--text-primary)] font-semibold uppercase tracking-wider truncate">
             Brightness × Anomaly
@@ -268,7 +268,7 @@ export const SignalCorrelationPlot: React.FC<SignalCorrelationPlotProps> = ({
       {/* Responsive D3 Scatter Plot SVG */}
       <div
         ref={wrapRef}
-        className="relative w-full border border-[var(--border-grid)] bg-[var(--bg-obsidian)]"
+        className="relative w-full border border-[var(--border-grid)] bg-[var(--bg-obsidian)] overflow-hidden"
         style={{ height: `${PLOT_HEIGHT}px` }}
       >
         <svg
@@ -279,8 +279,9 @@ export const SignalCorrelationPlot: React.FC<SignalCorrelationPlotProps> = ({
             3
           )}, ${stats.strengthLabel}, ${stats.n} samples.`}
           className="block w-full h-full cursor-crosshair select-none"
-          onMouseMove={handleSvgMouseMove}
-          onMouseLeave={() => setHoveredId(null)}
+          onPointerDown={(e) => inspectSvgAtClientPoint(e.currentTarget, e.clientX, e.clientY)}
+          onPointerMove={(e) => inspectSvgAtClientPoint(e.currentTarget, e.clientX, e.clientY)}
+          onPointerLeave={() => setHoveredId(null)}
         >
           <g transform={`translate(${MARGIN.left},${MARGIN.top})`}>
             {/* Subtle grid lines */}
